@@ -302,10 +302,13 @@ ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ sp
 
 スタミナ消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2-5.5):
   毎フレーム dStamina/dt = +STAMINA_REGEN_IDLE·m.staminaRegenMul·m.clutchRecoveryMul
-                          − STAMINA_MOVE_DRAIN_K·speed·driveMul
-                          − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+                          − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul(m.moveSpeedMul)
     speed = 現在の水平速度の大きさ。driveMul = m.staminaDrainMul·(1 + (m.pressureDrainMul−1)·pressure)
-  打球インパクト時に1回: stamina −= shotStaminaCost(type,charge,isSmash)·driveMul
+    moveEconomyMul = 移動の燃費(speed が高いほど < 1.0)。移動・スプリント消費にのみ乗算し、
+      打球コストには掛けない。速い選手は移動時間が短く待機回復の取り分が減る不利を相殺し、
+      「速さ=広く動ける」を報いる。強さは STAMINA_MOVE_ECONOMY_K でライブ調整(§17 スライダー「速さの燃費」)。
+      moveSpeedMul から speed レーティング中心差を逆算して算出する(constants.ts に集約)。
+  打球インパクト時に1回: stamina −= shotStaminaCost(type,charge,isSmash)·driveMul  // 移動燃費は掛けない
   ポイント間回復(STAMINA_POINT_RECOVERY)・全回復は ×m.clutchRecoveryMul、上限 effStaminaMax。
   view.staminaPct = stamina / effStaminaMax を毎フレーム公開(ゲージ・発汗用)。
   低スタミナの品質低下(calcStaminaFactor)は据え置き(効き方は割合で判定)。
@@ -437,6 +440,11 @@ GAME_DESIGN §7.2 の表が constants.ts にある)で挙動を決める。
   受け位置も変わる。
 - 相手が打ってから `reactionDelay` 秒は旧目標のまま(反応遅延)。
 - 予測点 ± 到達余裕で移動。スプリントは「間に合わない時だけ」使用(スタミナ管理)。
+  判断は**到達余裕ベース**: 歩行到達時間 `dist / (WALK_SPEED·speedScale·moveSpeedMul)` が
+  `predictLanding().time − AI_SPRINT_TIME_MARGIN`(着地までの残り時間)を超える=歩きでは
+  間に合わない時だけ走る。着地予測が無い時のみ旧来の距離ベース(0.45 秒)へフォールバック。
+  これにより「余裕があるのに遠いから走る」無駄を排し、足の速いスピードスターほど歩いて
+  しのげる場面が増えて消耗を抑える(コート到達性は維持。間に合わない球では従来どおり走る)。
 - ショット選択: 重みベースのスコアリング
   `score(shot, targetX) = openCourt項 + 体勢項 + 相手前後位置項 + tendency項 + ノイズ`
   を全(shot×コース)候補に対し評価して最大を選ぶ。難易度で aggressiveness と
@@ -548,8 +556,14 @@ rAF(t):
   `constants.ts` の `TUNABLES`(`key/label/desc/min/max/step/get/set`)を UI が列挙して生成し、
   各行はホバーで `desc` をツールチップ表示する。対象定数は `export let`(ES module ライブ
   バインディング)にしてあり、`set()` の再代入が各モジュールの参照(毎フレーム読む箇所)へ
-  即反映される。主にスタミナ系(基礎回復・移動消費・スプリント消費・品質低下しきい値・
+  即反映される。主にスタミナ系(基礎回復・移動消費・スプリント消費・速さの燃費・品質低下しきい値・
   枯渇時品質・ポイント間回復)+ チャージ威力。
+- **`?auto`(オートプレイ / AI 対 AI)**: 手前コートも `AIController`(`side='player'`)で操作する
+  デモ・挙動検証モード。`AIController` は `side` 以外を `sideSign(this.side)` で吸収して両コートに
+  対応する(サーブ弾道は `handleServe` が `server` 側基準で解くため side 非依存)。長いラリーを
+  放置で生成でき、スタミナ消費やスプリント頻度の計測に使う(`scripts/aistamina.mjs`)。
+- **`?debug` 限定の計測フック `window.__diag()`**: `phase` と両者の位置・スタミナ・スプリント状態を
+  返す。ヘッドレス検証から高頻度ポーリングして時系列計測する用途(本番挙動には影響しない)。
 
 ## 16. テスト方針
 

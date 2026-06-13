@@ -64,6 +64,7 @@ import {
   STAMINA_REGEN_IDLE,
   STAMINA_MOVE_DRAIN_K,
   STAMINA_SPRINT_EXTRA,
+  moveEconomyMul,
   STAMINA_POINT_RECOVERY,
   shotStaminaCost,
   SWEET_DIST,
@@ -80,6 +81,10 @@ type AiMode = 'returning' | 'intercept' | 'recover'
 const AI_REACH_BUFFER = 0.85 // この余裕(m)以内に近づいたら打球を試みる
 const AI_HYSTERESIS = 0.25 // 目標 x/z の更新ヒステリシス(m)。これ未満の変化は無視
 const AI_ARRIVE_EPS = 0.12 // 目標到達とみなす距離(m)
+// スプリント判断の到達余裕マージン(秒)。「歩いて到達に要する時間」が
+// 「ボール着地までの残り時間 − このマージン」を超える=歩きでは間に合わない時だけ走る。
+// 大きいほど早めに(=余裕をもって)走り出し、小さいほどギリギリまで歩いて体力を温存する。
+const AI_SPRINT_TIME_MARGIN = 0.18
 const AI_BLUNDER_QUALITY = 0.4 // 凡ミス時に品質に乗算する係数
 const AI_SERVE_AIM_WIDE_PROB = 0.55 // サーブでワイド/センター(端)を狙う確率
 /** スイング演出の表示時間(秒) */
@@ -104,8 +109,8 @@ const PERSONA_NETRUSH_W = 0.8
  */
 const PERSONA_NETRUSH_NEUTRAL = 0.3
 
-// 相手が「前」と判断する z 閾値(プレイヤー側コートでネット〜サービスライン付近)。
-// プレイヤーコートは z>0 なので SERVICE_LINE_Z を境界に使う。
+// 相手が「前」と判断する“ネットからの距離”の閾値。サービスライン付近までを前と見なす。
+// 呼び出し側は Math.abs(rivalZ) と比較するので side 非依存(どちらのコートでも使える)。
 function frontThreshold(): number {
   return SERVICE_LINE_Z
 }
@@ -141,7 +146,9 @@ function round2(x: number): number {
 // ---------------------------------------------------------------------------
 
 export class AIController implements Controller {
-  readonly side: Side = 'opponent'
+  // 担当サイド。既定は奥コート(opponent)だが、AI 対 AI(オートプレイ)では
+  // 手前コート(player)にも割り当てられる。side 依存はすべて sideSign(this.side) で吸収する。
+  readonly side: Side
   private readonly profile: AIProfile
 
   // ペルソナ倍率・身体(DI)。中立倍率(全1.0)・右利きでは従来と同一挙動。
@@ -151,8 +158,8 @@ export class AIController implements Controller {
   private readonly effStaminaMax: number
   private readonly effReach: number
 
-  // 物理状態
-  private readonly pos = new Vector3(0, 0, -HOME_POS_Z)
+  // 物理状態(初期位置は constructor で side に応じて設定する)
+  private readonly pos = new Vector3(0, 0, 0)
   private readonly vel = new Vector3(0, 0, 0)
   private stamina = STAMINA_MAX
   private sprinting = false
@@ -171,7 +178,10 @@ export class AIController implements Controller {
   private stance: 'baseline' | 'net' = 'baseline'
   private stanceDecided = false // この入射球についてスタンスを決定済みか
   private chaseLogged = false // この入射球について追走ログを出力済みか(?debug 診断用)
-  private readonly targetPos = new Vector3(0, 0, -HOME_POS_Z) // 現在の移動目標
+  // intercept 時の「ボール着地までの残り時間」(秒)。decideTarget で predictLanding から保存し、
+  // moveToward のスプリント判断(歩いて間に合うか)に使う。余裕不明時は < 0(距離ベースへフォールバック)。
+  private interceptTimeAvail = -1
+  private readonly targetPos = new Vector3(0, 0, 0) // 現在の移動目標(初期位置は constructor で設定)
   private reactionTimer = 0 // 相手打球後の反応遅延の残り時間
   private lastSeenHitBy: Side | null = null // 直近に観測した lastHitBy(打球検出用)
   private blunderThisPoint = false // このポイントで凡ミスするか
@@ -193,7 +203,8 @@ export class AIController implements Controller {
   private readonly _view: PlayerView
   private readonly _serveMeter: ServeMeterView = { active: false, value: 0, serveType: 'flat' }
 
-  constructor(profile: AIProfile, mods: PersonaModifiers, physique: PersonaPhysique) {
+  constructor(profile: AIProfile, mods: PersonaModifiers, physique: PersonaPhysique, side: Side = 'opponent') {
+    this.side = side
     this.profile = profile
     this.mods = mods
     this.physique = physique
@@ -201,8 +212,12 @@ export class AIController implements Controller {
     this.effReach = REACH * mods.reachMul
     // スタミナ初期値を有効上限に(中立倍率では STAMINA_MAX のまま)
     this.stamina = this.effStaminaMax
+    // 初期位置は担当サイドのホームへ(opponent: z<0 / player: z>0)
+    const homeZ = sideSign(side) * HOME_POS_Z
+    this.pos.set(0, 0, homeZ)
+    this.targetPos.set(0, 0, homeZ)
     this._view = {
-      side: 'opponent',
+      side: this.side,
       pos: this.pos,
       vel: this.vel,
       stamina: this.stamina,
@@ -259,12 +274,12 @@ export class AIController implements Controller {
 
     if (amServing) {
       // サーバーはベースライン後方の対応サイドへ。
-      // serveFromRight = サーバー視点の右。opponent のサーバー視点右は x>0 側。
+      // serveFromRight は「世界座標で +x 側」の統一規約(main.currentServiceBox と同じ)。
+      // 両サイド共通で world +x/-x に立ち、ボックスは対角(反対の world x)に入る。side では反転しない。
       // サーブサイド半面内 [SERVE_X_MARGIN_CENTER, COURT_HALF_WIDTH] でランダムに配置。
       // ワイド寄り/センター寄りを時々変えることで配球の駆け引きを演出する。
-      const xSign = serveFromRight ? 1 : -1
       const xRand = SERVE_X_MARGIN_CENTER + Math.random() * (COURT_HALF_WIDTH - SERVE_X_MARGIN_CENTER)
-      placeX = xSign * xRand
+      placeX = (serveFromRight ? 1 : -1) * xRand
       placeZ = sign * (COURT_HALF_LENGTH + 0.5)
     } else {
       // レシーバーは対角ボックスを受ける位置(やや内側・ベースライン付近)
@@ -577,6 +592,8 @@ export class AIController implements Controller {
     // 反応遅延中は目標を更新しない(直前の目標へ動き続ける)
     if (this.reactionTimer > 0) return
 
+    // 既定では到達余裕を無効化。自分側へ来る intercept のときだけ下で正値を入れる。
+    this.interceptTimeAvail = -1
     let goalX = 0
     let goalZ = homeZ
 
@@ -591,6 +608,8 @@ export class AIController implements Controller {
         this.decideStance(ctx, pred)
         goalX = pred.pos.x
         goalZ = this.stanceGoalZ(pred.pos.z)
+        // スプリント判断用に着地までの残り時間を保存(moveToward で参照)
+        this.interceptTimeAvail = pred.time
         // 追走診断ログ(入射球ごとに1回)。ドロップ見送り等の事後分析用(?debug)。
         // 予測着地への距離・到達ETA・スタミナ・スプリント可否を残し、
         // 「届かなかったのか/見送ったのか/スタミナ切れか」を判別できるようにする。
@@ -726,14 +745,21 @@ export class AIController implements Controller {
       return
     }
 
-    // スプリント判断: 「歩行では間に合わない」と判断したときのみ。
-    // 反応遅延後の intercept で、残り時間に対して距離が大きい場合にスプリント。
+    // スプリント判断: 「歩行では間に合わない」ときだけ走る(体力温存)。
+    // 歩行速度はペルソナ補正込みの実速度を使う(素の WALK_SPEED だと足の速い
+    // スピードスターも遅い選手と同頻度でスプリントを焚いてしまい、燃費で損をする)。
     let wantSprint = false
     if (this.mode === 'intercept') {
-      // 歩行で到達に要する時間と、ボール着地までの余裕を比較したいが、
-      // ここでは距離が WALK で 0.45 秒以上かかる遠さなら走る、という簡易判定。
-      const walkTime = dist / WALK_SPEED
-      if (walkTime > 0.45) wantSprint = true
+      const effWalkSpeed = WALK_SPEED * this.profile.speedScale * this.mods.moveSpeedMul
+      const walkTime = effWalkSpeed > 0 ? dist / effWalkSpeed : Infinity
+      if (this.interceptTimeAvail >= 0) {
+        // 到達余裕ベース: ボール着地までの残り時間内に歩いて間に合うなら走らない。
+        // 余裕があっても遠ければ走っていた旧判定(距離のみ)を是正し、無駄なスプリントを削減。
+        wantSprint = walkTime > this.interceptTimeAvail - AI_SPRINT_TIME_MARGIN
+      } else {
+        // 着地予測が無い場合のフォールバック(従来の距離ベース)。
+        wantSprint = walkTime > 0.45
+      }
     }
     // スタミナ 0 ならスプリント不可
     if (this.stamina <= 0) wantSprint = false
@@ -791,15 +817,18 @@ export class AIController implements Controller {
   /**
    * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
    * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
-   *             − STAMINA_MOVE_DRAIN_K·speed·driveMul
-   *             − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+   *             − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul
    * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
+   * moveEconomyMul はスピード由来の移動燃費(打球コストには掛けない。STAMINA_MOVE_ECONOMY_K で調整)。
    */
   private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
     const speed = Math.hypot(this.vel.x, this.vel.z)
     const drive = this.driveMul(pressure)
     const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
-    const drain = (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) * drive
+    const drain =
+      (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) *
+      drive *
+      moveEconomyMul(this.mods.moveSpeedMul)
     this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, this.effStaminaMax)
   }
 
@@ -864,11 +893,13 @@ export class AIController implements Controller {
 
     this.lastShot = req.type
 
-    // スイングサイドを決定: AI は奥側(z<0)で +z を向く。
-    // 右利きの利き手側は世界の −x 方向。打点ボールが AI より −x 側なら 'fore'、+x 側なら 'back'。
-    // 左利きは不等号を反転する。
-    const ballOnLeft = bpos.x < this.pos.x
-    const foreSide = this.physique.handedness === 'left' ? !ballOnLeft : ballOnLeft
+    // スイングサイドを決定(演出のみ)。opponent は奥側(z<0)で +z を向き、右利きの
+    // 利き手側は世界 −x 方向。player 側(z>0 で −z を向く)は向きが反転するので sign で補正。
+    // 打点ボールが利き手側にあれば 'fore'、逆なら 'back'。左利きは反転。
+    const handLeftIsWorldNegX = sideSign(this.side) < 0 // opponent のとき true
+    const ballOnHandSide =
+      bpos.x < this.pos.x === handLeftIsWorldNegX
+    const foreSide = this.physique.handedness === 'left' ? !ballOnHandSide : ballOnHandSide
     this.swingSide = foreSide ? 'fore' : 'back'
 
     this.swingState = 'swing'
@@ -946,10 +977,13 @@ export class AIController implements Controller {
     // スマッシュ条件(高打点 × 前寄り × flat)—GAME_DESIGN §4.5
     const smashCondition = h >= SMASH_MIN_HEIGHT && depth <= SMASH_MAX_DEPTH
 
-    // 相手の前後位置: プレイヤーがネット寄り(z 小)なら「前」、深い(z 大)なら「後ろ」
-    const rivalZ = rivalPos.z
-    const rivalIsForward = rivalZ < frontThreshold() // ネット〜サービスライン付近以前
-    const rivalIsDeep = rivalZ > COURT_HALF_LENGTH - 1.5 // ベースライン付近
+    // 相手の前後位置: ネットからの距離(|z|)で判定する(相手は常に自陣側 = rivalSign 側に
+    // いるので side 非依存になる)。ネット寄り(|z|小)なら「前」、深い(|z|大)なら「後ろ」。
+    // 注: かつて rivalZ を直接 frontThreshold と比較していたが、それは相手が +z 前提で、
+    // player 側 AI から見た相手(z<0)では常に「前」と誤判定し、ロブを乱発していた。
+    const rivalDistFromNet = Math.abs(rivalPos.z)
+    const rivalIsForward = rivalDistFromNet < frontThreshold() // ネット〜サービスライン付近以前
+    const rivalIsDeep = rivalDistFromNet > COURT_HALF_LENGTH - 1.5 // ベースライン付近
 
     // 自分の走らされ度: 速度の大きさ(と残り反応的余裕)。速いほど安全策。
     const mySpeed = Math.hypot(this.vel.x, this.vel.z)
@@ -1025,9 +1059,12 @@ export class AIController implements Controller {
     const riskMargin =
       TARGET_CLAMP_MARGIN + expectedNoise * (1 - 0.45 * this.profile.aggressiveness)
 
-    // 相手(プレイヤー)コート内にクランプ(マージン込み)。プレイヤーコートは z>0。
+    // 相手コート内にクランプ(マージン込み)。相手コートは rivalSign 側(opponent AI なら z>0、
+    // player 側 AI なら z<0)。z は符号付きで [ネット際, 相手ベースライン手前] に収める。
     tx = clamp(tx, -COURT_HALF_WIDTH + riskMargin, COURT_HALF_WIDTH - riskMargin)
-    tz = clamp(tz, TARGET_CLAMP_MARGIN, COURT_HALF_LENGTH - riskMargin)
+    const tzNear = rivalSign * TARGET_CLAMP_MARGIN // ネット際
+    const tzFar = rivalSign * (COURT_HALF_LENGTH - riskMargin) // 相手ベースライン手前
+    tz = clamp(tz, Math.min(tzNear, tzFar), Math.max(tzNear, tzFar))
 
     // チャージ量の決定: 体勢ベース。余裕があるほど高チャージ、走らされているほど低チャージ。
     // 低い打点では強打(高チャージ)を避ける(GAME_DESIGN §4.5: 低打点の無理打ちは自滅)。

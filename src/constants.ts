@@ -278,6 +278,9 @@ export let STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
 export let STAMINA_REGEN_IDLE = 5 // /s 常時の基礎回復(速度0で全量)
 export let STAMINA_MOVE_DRAIN_K = 1.55 // /s あたり(m/s)。drain = K·speed
 export let STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
+// スピード由来の移動燃費(IMPROVEMENTS / GAME_DESIGN §6)。speed が中心 r=2 から離れるほど
+// 移動・スプリント消費を増減させる係数。0 で無効(全員同一燃費)。moveEconomyMul() で適用。
+export let STAMINA_MOVE_ECONOMY_K = 0.05
 
 // 強いショットの打球時消費(インパクト時に1回。IMPROVEMENTS §5.3)
 export const SHOT_STAMINA_BASE: Record<ShotType, number> = {
@@ -523,6 +526,21 @@ function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x
 }
 
+/**
+ * スピード由来の移動燃費倍率(ライブ。移動・スプリント消費に乗算、打球コストには掛けない)。
+ * 移動消費 K·speed は距離で積分すると速度に依らず公平だが、速い選手は移動時間が短いぶん
+ * 待機回復の取り分が減り損をする。これを相殺し「速さ=広く省エネに動ける」を報いる割引。
+ * 強さは STAMINA_MOVE_ECONOMY_K(デバッグスライダー)でライブ調整。speed の中心は r=2。
+ * moveSpeedMul から中心差 (r.speed − 2) を逆算する(式 moveSpeedMul=0.88+0.06·r と整合させること)。
+ * 下限 0.5 でクランプ(係数を上げても消費が反転しない)。
+ * 例(K=0.05): speed5→0.85 / 3→0.95 / 2→1.00 / 1→1.05。
+ */
+export function moveEconomyMul(moveSpeedMul: number): number {
+  const speedDelta = (moveSpeedMul - 1.0) / 0.06 // = r.speed − 2
+  const mul = 1 - STAMINA_MOVE_ECONOMY_K * speedDelta
+  return mul < 0.5 ? 0.5 : mul
+}
+
 /** 中立倍率(全 1.0)。ペルソナ未指定(テスト・ダミー)時のフォールバック */
 export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
   serveSpeedMul: 1, serveFaultMul: 1, shotSpeedMul: 1, chargeGainMul: 1,
@@ -564,6 +582,11 @@ export const TUNABLES: Tunable[] = [
     key: 'staminaSprintExtra', label: 'スプリント消費', min: 0, max: 30, step: 1,
     desc: 'スプリント中の追加消費 /s。上げると全力疾走の代償が大きくなる。',
     get: () => STAMINA_SPRINT_EXTRA, set: (v) => { STAMINA_SPRINT_EXTRA = v },
+  },
+  {
+    key: 'staminaMoveEconomyK', label: '速さの燃費', min: 0, max: 0.2, step: 0.01,
+    desc: 'スピード由来の移動燃費の効き。上げるほど足の速い選手ほど移動消費が軽くなる(0で全員同一)。',
+    get: () => STAMINA_MOVE_ECONOMY_K, set: (v) => { STAMINA_MOVE_ECONOMY_K = v },
   },
   {
     key: 'staminaLowThreshold', label: '品質低下しきい値', min: 0, max: 80, step: 1,

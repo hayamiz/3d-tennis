@@ -59,6 +59,8 @@ const uiRoot = document.getElementById('ui-root') as HTMLElement
 
 // ?debug でゲームプレイ診断ログを有効化(バランス調整・自動検証用)
 const DEBUG = new URLSearchParams(location.search).has('debug')
+// ?auto: オートプレイ(両コートを AI が操作)。デモ/挙動検証用。
+const AUTO_PLAY = new URLSearchParams(location.search).has('auto')
 const dbg = (...args: unknown[]) => {
   if (DEBUG) console.log('[dbg]', ...args)
 }
@@ -547,8 +549,12 @@ function startMatch(cfg: MatchConfig): void {
   const opponentPersona = PLAYER_PERSONAS[cfg.opponentPersona]
   playerMods = personaModifiers(playerPersona.ratings, playerPersona.mental)
   opponentMods = personaModifiers(opponentPersona.ratings, opponentPersona.mental)
-  playerCtrl = new PlayerController(sharedInput, playerMods, playerPersona.physique)
-  aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique)
+  // オートプレイ(AI 対 AI / デモ・検証用): ?auto 付きなら手前コートも AIController で操作する。
+  // 通常は手前コートを人間プレイヤー(PlayerController)が操作する。
+  playerCtrl = AUTO_PLAY
+    ? new AIController(AI_PROFILES[cfg.difficulty], playerMods, playerPersona.physique, 'player')
+    : new PlayerController(sharedInput, playerMods, playerPersona.physique)
+  aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique, 'opponent')
   // サーフェスを適用(物理スケール + コート色)
   setSurface(cfg.surface)
   renderer.setSurface(cfg.surface)
@@ -756,4 +762,19 @@ function dummyView(side: Side): PlayerView {
 
 ui.showMenu()
 ui.setDebugVisible(debugMode) // ?debug 付きなら初期 ON
+
+// ?debug 限定の計測フック(scripts/ のヘッドレス検証から AI/プレイヤーのスタミナ・
+// スプリント状態を毎フレーム読むためのもの。本番ビルドの挙動には影響しない)。
+if (debugMode) {
+  ;(window as unknown as { __diag?: () => unknown }).__diag = () => ({
+    phase,
+    ball: { x: ballSim.state.pos.x, y: ballSim.state.pos.y, z: ballSim.state.pos.z, by: ballSim.state.lastHitBy, bc: ballSim.state.bounceCount },
+    player: playerCtrl ? { x: playerCtrl.view.pos.x, z: playerCtrl.view.pos.z, staminaPct: playerCtrl.view.staminaPct, sprinting: playerCtrl.view.sprinting } : null,
+    ai: aiCtrl ? { x: aiCtrl.view.pos.x, z: aiCtrl.view.pos.z, staminaPct: aiCtrl.view.staminaPct, sprinting: aiCtrl.view.sprinting } : null,
+  })
+  // 現在ポイントのデバッグログ(サーブ・スタンス・追走・打球イベント)。検証スクリプト用。
+  ;(window as unknown as { __pointlog?: () => unknown }).__pointlog = () => pointLog
+
+}
+
 requestAnimationFrame(frame)

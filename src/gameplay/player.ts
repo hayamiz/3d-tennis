@@ -27,6 +27,7 @@ import {
   STAMINA_REGEN_IDLE,
   STAMINA_MOVE_DRAIN_K,
   STAMINA_SPRINT_EXTRA,
+  moveEconomyMul,
   STAMINA_POINT_RECOVERY,
   STAMINA_LOW_THRESHOLD,
   STAMINA_QUALITY_FLOOR,
@@ -736,17 +737,20 @@ export class PlayerController implements Controller {
   /**
    * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
    * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
-   *             − STAMINA_MOVE_DRAIN_K·speed·driveMul
-   *             − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+   *             − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul
    * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
+   * moveEconomyMul はスピード由来の移動燃費(打球コストには掛けない。STAMINA_MOVE_ECONOMY_K で調整)。
    */
   private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
     const speed = Math.sqrt(this.vel.x * this.vel.x + this.vel.z * this.vel.z)
     const drive = this.driveMul(pressure)
     // 基礎回復(クラッチ回復ボーナス込み)
     const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
-    // 移動量比例消費 + スプリント追加消費
-    const drain = (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) * drive
+    // 移動量比例消費 + スプリント追加消費(スピード由来の移動燃費 moveEconomyMul を乗算)
+    const drain =
+      (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) *
+      drive *
+      moveEconomyMul(this.mods.moveSpeedMul)
     const next = this.stamina + (regen - drain) * dt
     this.stamina = Math.max(0, Math.min(this.effStaminaMax, next))
   }
