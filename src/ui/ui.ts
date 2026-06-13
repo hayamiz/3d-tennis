@@ -310,6 +310,28 @@ export class UI {
   /** チャージバーの塗り(幅 % で変化) */
   private readonly hudChargeBarFill: HTMLElement
 
+  // -------------------------------------------------------------------------
+  // デバッグオーバーレイ関連フィールド
+  // -------------------------------------------------------------------------
+
+  /** オーバーレイ全体のコンテナ(左下固定) */
+  private readonly debugOverlay: HTMLElement
+  /** ライブログ行を格納するリスト要素 */
+  private readonly debugLogEl: HTMLElement
+  /** デバッグメニューのヘッダ行 */
+  private readonly debugHeader: HTMLElement
+  /** JSON を表示する <pre> 要素 */
+  private readonly debugJsonPre: HTMLElement
+  /** [Show/Hide JSON] ボタン */
+  private readonly debugShowJsonBtn: HTMLButtonElement
+  /** [Copy JSON] ボタン */
+  private readonly debugCopyBtn: HTMLButtonElement
+
+  /** ライブログの内部バッファ(最大200行) */
+  private readonly debugLines: string[] = []
+  /** 直近1ポイント分のJSON文字列 */
+  private debugDumpJson: string = ''
+
   // 前回描画値のキャッシュ
   private cache: HudCache = {
     pointPlayer: '',
@@ -362,6 +384,16 @@ export class UI {
     root.appendChild(this.menuScreen)
     root.appendChild(this.hudScreen)
     root.appendChild(this.matchOverScreen)
+
+    // デバッグオーバーレイを構築して root に追加
+    const debugRefs = this.buildDebugOverlay()
+    this.debugOverlay    = debugRefs.overlay
+    this.debugLogEl      = debugRefs.logEl
+    this.debugHeader     = debugRefs.header
+    this.debugJsonPre    = debugRefs.jsonPre
+    this.debugShowJsonBtn = debugRefs.showJsonBtn
+    this.debugCopyBtn    = debugRefs.copyBtn
+    root.appendChild(this.debugOverlay)
   }
 
   // -------------------------------------------------------------------------
@@ -601,6 +633,159 @@ export class UI {
     btns.appendChild(rematchBtn)
     btns.appendChild(titleBtn)
     this.matchOverScreen.appendChild(btns)
+  }
+
+  // -------------------------------------------------------------------------
+  // デバッグオーバーレイ 公開 API
+  // -------------------------------------------------------------------------
+
+  /**
+   * デバッグオーバーレイ(ライブログ窓 + メニュー)の表示/非表示を切り替える。
+   * main.ts が `D` キー等でトグルする想定。showMenu/showHud では変化しない(独立)。
+   */
+  setDebugVisible(on: boolean): void {
+    this.debugOverlay.classList.toggle('visible', on)
+    // 表示したときに最新ログを反映する
+    if (on) {
+      this.renderDebugLog()
+    }
+  }
+
+  /**
+   * ライブログ窓に1行追記する。
+   * 内部バッファは最大 200 行でキャップし、表示は直近 16 行のみ。
+   * オーバーレイ非表示中でも内部バッファには蓄積する。
+   */
+  pushDebugLine(line: string): void {
+    this.debugLines.push(line)
+    // 最大 200 行でキャップ(古いものを破棄)
+    if (this.debugLines.length > 200) {
+      this.debugLines.splice(0, this.debugLines.length - 200)
+    }
+    // 表示中のときのみ DOM に反映する
+    if (this.debugOverlay.classList.contains('visible')) {
+      this.renderDebugLog()
+    }
+  }
+
+  /**
+   * 直近1ポイント分のログ JSON を保持する。
+   * flagged=true(ダブルフォルト等の異常)のときヘッダを警告色にして "⚠" を付ける。
+   * JSON 表示 <pre> の内容も即座に更新する。
+   */
+  setDebugDump(json: string, flagged: boolean): void {
+    this.debugDumpJson = json
+    // ヘッダの flagged 状態を更新
+    this.debugHeader.classList.toggle('flagged', flagged)
+    this.debugHeader.textContent = flagged
+      ? '⚠ DEBUG — last point (FLAGGED)'
+      : 'DEBUG — last point'
+    // JSON <pre> が表示中なら内容も更新
+    if (!this.debugJsonPre.classList.contains('hidden')) {
+      this.debugJsonPre.textContent = json
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // メニュー画面構築
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // デバッグオーバーレイ 画面構築
+  // -------------------------------------------------------------------------
+
+  /**
+   * デバッグオーバーレイ DOM を構築して返す。
+   * root には append しない — constructor で行う。
+   */
+  private buildDebugOverlay(): {
+    overlay: HTMLElement
+    logEl: HTMLElement
+    header: HTMLElement
+    jsonPre: HTMLElement
+    showJsonBtn: HTMLButtonElement
+    copyBtn: HTMLButtonElement
+  } {
+    // オーバーレイ全体(左下固定。既定は非表示)
+    const overlay = el('div', 'debug-overlay')
+
+    // ライブログ窓
+    const logEl = el('div', 'debug-log')
+    overlay.appendChild(logEl)
+
+    // ---- デバッグメニュー ----
+    const menu = el('div', 'debug-menu')
+
+    // ヘッダ行
+    const header = el('div', 'debug-header', 'DEBUG — last point')
+    menu.appendChild(header)
+
+    // ボタン行
+    const btnRow = el('div', 'debug-btn-row')
+
+    // [Copy JSON] ボタン
+    const copyBtn = el('button', 'debug-btn', 'Copy JSON')
+    copyBtn.addEventListener('click', () => {
+      // クリップボード API が利用可能な場合は書き込みを試みる
+      navigator.clipboard.writeText(this.debugDumpJson).then(() => {
+        // 成功フィードバック: 一時的にラベル変更
+        copyBtn.textContent = 'Copied!'
+        setTimeout(() => { copyBtn.textContent = 'Copy JSON' }, 1600)
+      }).catch(() => {
+        // 失敗時: JSON <pre> を開いて手動コピーを促す
+        jsonPre.classList.remove('hidden')
+        jsonPre.textContent = this.debugDumpJson
+        showJsonBtn.textContent = 'Hide JSON'
+      })
+    })
+    btnRow.appendChild(copyBtn)
+
+    // [Show/Hide JSON] ボタン
+    const showJsonBtn = el('button', 'debug-btn', 'Show JSON')
+    showJsonBtn.addEventListener('click', () => {
+      const hidden = jsonPre.classList.contains('hidden')
+      if (hidden) {
+        jsonPre.classList.remove('hidden')
+        jsonPre.textContent = this.debugDumpJson
+        showJsonBtn.textContent = 'Hide JSON'
+      } else {
+        jsonPre.classList.add('hidden')
+        showJsonBtn.textContent = 'Show JSON'
+      }
+    })
+    btnRow.appendChild(showJsonBtn)
+
+    menu.appendChild(btnRow)
+
+    // JSON 全文表示 <pre>(既定 hidden。pointer-events:auto で選択可能)
+    const jsonPre = el('pre', 'debug-json hidden')
+    menu.appendChild(jsonPre)
+
+    overlay.appendChild(menu)
+
+    return { overlay, logEl, header, jsonPre, showJsonBtn, copyBtn }
+  }
+
+  // -------------------------------------------------------------------------
+  // デバッグオーバーレイ 内部ヘルパー
+  // -------------------------------------------------------------------------
+
+  /**
+   * debugLines 配列の直近 16 行を debugLogEl に再描画する。
+   * DOM の子を一括差し替えるので毎フレーム呼ぶことは想定していない
+   * (pushDebugLine / setDebugVisible のタイミングのみ)。
+   */
+  private renderDebugLog(): void {
+    // 直近 16 行だけ表示
+    const visibleLines = this.debugLines.slice(-16)
+    // 既存 DOM をクリアして再構築
+    this.debugLogEl.innerHTML = ''
+    for (const line of visibleLines) {
+      const lineEl = el('div', 'debug-log-line', line)
+      this.debugLogEl.appendChild(lineEl)
+    }
+    // 最下行にスクロール
+    this.debugLogEl.scrollTop = this.debugLogEl.scrollHeight
   }
 
   // -------------------------------------------------------------------------

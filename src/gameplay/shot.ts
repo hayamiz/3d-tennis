@@ -798,15 +798,21 @@ export function solveServe(
   }
 
   // --- 横曲がり補正: 着地の水平(x)誤差を打ち出し方向の回転にフィードバック ---
-  let result = sweepElevation(dirX, dirZ)
+  // 反復で悪化しても破棄しないよう、全試行を通じて最も狙いに近い解を保持する
+  // (旧実装は毎反復で result を無条件に上書きしていたため、サイドスピン(slice/kick)や
+  //  オーバーパワー時に方向が発散して的外れなサーブ→ダブルフォルトを起こしていた)。
+  const landErr = (land: Vector3) => Math.hypot(land.x - aimedTarget.x, land.z - aimedTarget.z)
+  let cur = sweepElevation(dirX, dirZ)
+  let best = cur
+  let bestErr = best ? landErr(best.land) : Infinity
   for (let iter = 0; iter < 4; iter++) {
-    if (!result) break
-    const errX = aimedTarget.x - result.land.x
+    if (!cur) break
+    const errX = aimedTarget.x - cur.land.x
     if (Math.abs(errX) < 0.15) break
-    // 着地が狙いより x+ に流れた(errX<0)なら打ち出しを x- へ回す、の逆。
-    // 水平方向ベクトルを errX に比例して回転(ゲイン控えめで発散を防ぐ)。
+    // 水平方向ベクトルを errX に比例して回転(ゲイン控えめ + 1ステップの回転量を
+    // ±0.2rad に制限して発散を防ぐ)。
     const horizDist = Math.max(1, Math.hypot(aimedTarget.x - hp.x, aimedTarget.z - hp.z))
-    const dAngle = (errX / horizDist) * 0.7
+    const dAngle = Math.max(-0.2, Math.min(0.2, (errX / horizDist) * 0.7))
     const cos = Math.cos(dAngle)
     const sin = Math.sin(dAngle)
     const nX = dirX * cos - dirZ * sin
@@ -815,19 +821,32 @@ export function solveServe(
     dirZ = nZ
     const next = sweepElevation(dirX, dirZ)
     if (!next) break
-    result = next
+    cur = next
+    const e = landErr(next.land)
+    if (e < bestErr) {
+      bestErr = e
+      best = next
+    }
   }
 
-  if (result) return { vel: result.vel, spin: result.spin }
+  if (best) return { vel: best.vel, spin: best.spin }
 
   // どの仰角でもネットを越えられない/着地しない場合のフォールバック:
-  // やや上向きに打ち上げて最低限ネットを越える解を返す。
-  const th = (8 * Math.PI) / 180
-  const vy = speed * Math.sin(th)
-  const vh = speed * Math.cos(th)
-  const horizDir = new Vector3(dirX, 0, dirZ)
+  // 速度を抑え、やや上向きでネットを最低限越える「安全な」解を返す(発散した
+  // 方向や過大な初速のまま打たない)。初期の打点→狙い方向を使う。
+  const safeSpeed = Math.min(speed, SERVE_SPEED_MIN)
+  let fbX = 0
+  let fbZ = -sideSign(hitter)
+  if (horiz0 > 1e-6) {
+    fbX = dx0 / horiz0
+    fbZ = dz0 / horiz0
+  }
+  const th = (10 * Math.PI) / 180
+  const vy = safeSpeed * Math.sin(th)
+  const vh = safeSpeed * Math.cos(th)
+  const horizDir = new Vector3(fbX, 0, fbZ)
   return {
-    vel: new Vector3(dirX * vh, vy, dirZ * vh),
+    vel: new Vector3(fbX * vh, vy, fbZ * vh),
     spin: spinVector(horizDir, stp.topSpin).add(sideSpinVec),
   }
 }

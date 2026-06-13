@@ -99,6 +99,11 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
 }
 
+/** デバッグログ用に小数2桁へ丸める */
+function round2(x: number): number {
+  return Math.round(x * 100) / 100
+}
+
 // ---------------------------------------------------------------------------
 // AIController
 // ---------------------------------------------------------------------------
@@ -361,6 +366,17 @@ export class AIController implements Controller {
     const frac = clamp(outDist / AI_LEAVE_CLEAR_MARGIN, 0, 1)
     const leaveProb = lerp(this.profile.leaveOutEdgeProb, this.profile.leaveOutClearProb, frac)
     this.leaveCurrentBall = Math.random() < leaveProb
+    ctx.logDebug?.({
+      kind: 'leave',
+      msg: `leave-judge land=(${round2(pred.pos.x)},${round2(pred.pos.z)}) out=${round2(outDist)}m p=${round2(leaveProb)} → ${this.leaveCurrentBall ? 'LEAVE' : 'play'}`,
+      data: {
+        landX: round2(pred.pos.x),
+        landZ: round2(pred.pos.z),
+        outDist: round2(outDist),
+        leaveProb: round2(leaveProb),
+        leave: this.leaveCurrentBall,
+      },
+    })
   }
 
   // -------------------------------------------------------------------------
@@ -407,6 +423,18 @@ export class AIController implements Controller {
     // serveMeter に反映(HUD 表示用、active は false のまま)
     this._serveMeter.serveType = serveType
 
+    ctx.logDebug?.({
+      kind: 'serve',
+      msg: `serve ${serveType} pow=${power.toFixed(2)} aimX=${aimX} (${ctx.serveNumber}st)`,
+      data: {
+        serveType,
+        power: round2(power),
+        aimX,
+        serveNumber: ctx.serveNumber,
+        posX: round2(this.pos.x),
+        posZ: round2(this.pos.z),
+      },
+    })
     ctx.requestServe(power, aimX, serveType)
     this.hasServedThisPhase = true
     this.serveArmed = false
@@ -662,6 +690,21 @@ export class AIController implements Controller {
 
     const quality = this.computeQuality(hdist)
     const req = this.chooseShot(ctx, quality)
+    ctx.logDebug?.({
+      kind: 'shot',
+      msg: `shot ${req.type} q=${round2(quality)} tgt=(${round2(req.target.x)},${round2(req.target.z)}) vIn=${round2(req.incomingSpeed)}`,
+      data: {
+        type: req.type,
+        quality: round2(quality),
+        targetX: round2(req.target.x),
+        targetZ: round2(req.target.z),
+        incomingSpeed: round2(req.incomingSpeed),
+        hitX: round2(ctx.ball.pos.x),
+        hitZ: round2(ctx.ball.pos.z),
+        hitY: round2(ctx.ball.pos.y),
+        blunder: this.blunderThisPoint,
+      },
+    })
     ctx.requestShot(req)
 
     this.lastShot = req.type

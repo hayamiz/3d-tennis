@@ -77,6 +77,14 @@ window.addEventListener('pointerdown', resumeAudio, { once: true })
 window.addEventListener('keydown', resumeAudio, { once: true })
 window.addEventListener('resize', () => renderer.resize())
 
+// バッククォート( ` )でデバッグオーバーレイ表示をトグル(docs/ARCHITECTURE.md §17)
+window.addEventListener('keydown', (ev) => {
+  if (ev.code === 'Backquote') {
+    debugMode = !debugMode
+    ui.setDebugVisible(debugMode)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // マッチ状態(onStart で初期化)
 // ---------------------------------------------------------------------------
@@ -107,6 +115,51 @@ function newStats(): MatchStats {
     errors: { player: 0, opponent: 0 },
     doubleFaults: { player: 0, opponent: 0 },
   }
+}
+
+// ---------------------------------------------------------------------------
+// デバッグログ(敵AIの判断ログ。docs/ARCHITECTURE.md §17)
+// バッククォート( ` )でオーバーレイ表示をトグル。直近1ポイントのログを保持し、
+// ポイント終了時に JSON 化して UI へ渡す(コピー用)。ON 中はライブ表示も流す。
+// ---------------------------------------------------------------------------
+interface DebugEntry {
+  t: number // ポイント開始からの経過秒
+  side: string // 'AI' | 'P' | 'sys'
+  kind: string
+  msg: string
+  data?: Record<string, unknown>
+}
+let debugMode = new URLSearchParams(location.search).has('debug') // ?debug で初期 ON
+let pointClock = 0
+let pointLog: DebugEntry[] = []
+let pointFlagged = false // このポイントで異常(フォルト等)が起きたか
+let pointStartScore = '' // ポイント開始時のスコア表示
+
+function pushLog(side: string, kind: string, msg: string, data?: Record<string, unknown>): void {
+  pointLog.push({ t: Math.round(pointClock * 100) / 100, side, kind, msg, data })
+  if (pointLog.length > 400) pointLog.shift()
+  if (debugMode) ui.pushDebugLine(`${pointClock.toFixed(1)}s ${side} ${msg}`)
+}
+
+function resetPointLog(): void {
+  pointClock = 0
+  pointLog = []
+  pointFlagged = false
+  pointStartScore = score ? `${score.view.points.player}-${score.view.points.opponent}` : ''
+}
+
+/** ポイント終了時に直近ポイントのログを JSON 化して UI へ渡す */
+function finalizePointLog(verdict: RallyVerdict): void {
+  const dump = {
+    server: score.view.server,
+    difficulty: config.difficulty,
+    playerPersona: config.playerPersona,
+    opponentPersona: config.opponentPersona,
+    scoreAtStart: pointStartScore,
+    verdict: { winner: verdict.winner, reason: verdict.reason },
+    events: pointLog,
+  }
+  ui.setDebugDump(JSON.stringify(dump, null, 2), pointFlagged)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +213,7 @@ function makeContext(self: Side): ControlContext {
     predictLanding: () => ballSim.predictLanding(),
     requestShot: (req: ShotRequest) => handleShot(req),
     requestServe: (power, aimX, serveType) => handleServe(self, power, aimX, serveType),
+    logDebug: (e) => pushLog(self === 'opponent' ? 'AI' : 'P', e.kind, e.msg, e.data),
   }
 }
 
@@ -205,6 +259,28 @@ function handleServe(
   ballSim.launch(hitPos, sol.vel, sol.spin, server)
   judge.reset(server, box)
   judge.onEvent({ kind: 'hit', by: server, shot: 'flat' }, ballSim.state)
+  // サーブ結果を記録(初速・予測着地・ボックス内か)。サーブ暴投の診断に使う。
+  const pred = ballSim.predictLanding()
+  const speed = Math.hypot(sol.vel.x, sol.vel.y, sol.vel.z)
+  const landIn =
+    pred != null &&
+    Math.sign(pred.pos.z) === box.zSign &&
+    pred.pos.x >= box.xMin - 0.3 &&
+    pred.pos.x <= box.xMax + 0.3 &&
+    Math.abs(pred.pos.z) <= SERVICE_LINE_Z + 0.4
+  pushLog('sys', 'serve', `serve→ v=${speed.toFixed(1)} land=${pred ? `(${pred.pos.x.toFixed(1)},${pred.pos.z.toFixed(1)})` : 'NET'} ${landIn ? 'IN' : 'OUT?'}`, {
+    server,
+    serveType,
+    power: Math.round(power * 100) / 100,
+    aimX,
+    speed: Math.round(speed * 10) / 10,
+    targetX: Math.round(target.x * 100) / 100,
+    landX: pred ? Math.round(pred.pos.x * 100) / 100 : null,
+    landZ: pred ? Math.round(pred.pos.z * 100) / 100 : null,
+    boxXMin: box.xMin,
+    boxXMax: box.xMax,
+    predictedIn: landIn,
+  })
   dbg(`serve ${server} ${serveType} power=${power.toFixed(2)} aimX=${aimX}`)
   sfx.play('serve', { intensity: power })
   renderer.sceneApi.spawnHitFx(hitPos.clone())
@@ -232,7 +308,10 @@ function bannerForVerdict(v: RallyVerdict): string {
 
 function applyVerdict(v: RallyVerdict): void {
   dbg(`verdict winner=${v.winner} reason=${v.reason} ball=${fmt(ballSim.state.pos)}`)
-  // 1stサーブのフォルトは失点にせず 2nd へ
+  pushLog('sys', 'verdict', `verdict ${v.reason} → ${v.winner}`, { reason: v.reason, winner: v.winner })
+  // フォルト/ダブルフォルトはこのポイントを「異常」としてフラグ(デバッグで拾いやすく)
+  if (v.reason === 'fault' || v.reason === 'doubleFault') pointFlagged = true
+  // 1stサーブのフォルトは失点にせず 2nd へ(ポイント継続なのでログは確定しない)
   if (v.reason === 'fault' && serveNumber === 1) {
     serveNumber = 2
     setBanner('Fault')
@@ -272,6 +351,8 @@ function applyVerdict(v: RallyVerdict): void {
     setBanner(`${bannerForVerdict(verdict)}  ${sv.points.player} - ${sv.points.opponent}`)
     sfx.play('point')
   }
+  // ポイント確定 → 直近1ポイントのログを JSON 化して UI(デバッグメニュー)へ
+  finalizePointLog(verdict)
   enterPointOver(verdict)
 }
 
@@ -296,6 +377,7 @@ function startNextPoint(): void {
   }
   const server = sv.server
   const right = serveFromRight()
+  resetPointLog() // 新しいポイントの判断ログを開始(スコアはまだ更新前)
   playerCtrl.resetForPoint(server, right)
   aiCtrl.resetForPoint(server, right)
   ballSim.state.inPlay = false
@@ -361,6 +443,9 @@ function physicsStep(): void {
     return
   }
   if (phase === 'menu' || phase === 'matchOver') return
+
+  // ポイント中(serve / rally)の経過時間(デバッグログのタイムスタンプ用)
+  if (phase === 'serve' || phase === 'rally') pointClock += PHYS_DT
 
   playerCtrl.update(PHYS_DT, ctxPlayer)
   aiCtrl.update(PHYS_DT, ctxOpponent)
@@ -469,4 +554,5 @@ function dummyView(side: Side): PlayerView {
 }
 
 ui.showMenu()
+ui.setDebugVisible(debugMode) // ?debug 付きなら初期 ON
 requestAnimationFrame(frame)

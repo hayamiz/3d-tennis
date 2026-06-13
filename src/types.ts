@@ -230,6 +230,21 @@ export interface ControlContext {
   isServing: boolean
   /** サーブ何本目か(1 or 2) */
   serveNumber: 1 | 2
+  /** AI の判断ログ出力(デバッグ用、任意)。実装側は省略可・null チェックして呼ぶ */
+  logDebug?: (e: AIDebugEvent) => void
+}
+
+/**
+ * AI の判断ログ 1 件(デバッグ用)。msg はライブ表示用の 1 行、data は JSON ダンプ用の構造化値。
+ * docs/ARCHITECTURE.md §17(デバッグ)。
+ */
+export interface AIDebugEvent {
+  /** 種別。'serve'=サーブ選択, 'shot'=ショット選択, 'leave'=見送り判定, 'note'=その他 */
+  kind: 'serve' | 'shot' | 'leave' | 'note'
+  /** 1 行サマリ(ライブログ表示用) */
+  msg: string
+  /** 構造化データ(JSON ダンプ用) */
+  data?: Record<string, number | string | boolean | null>
 }
 
 export interface Controller {

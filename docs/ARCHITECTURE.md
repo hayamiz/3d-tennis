@@ -509,6 +509,22 @@ rAF(t):
   ui.updateHud(hudView)
 ```
 
+## 17. デバッグ(AI判断ログ)
+
+敵AIの不可解なプレー(例: サーブの暴投→ダブルフォルト)を診断するための仕組み。
+
+- `ControlContext.logDebug?(e: AIDebugEvent)` — コントローラが判断ポイントで呼ぶ任意のシンク。
+  AI は サーブ選択(`serve`)・ショット選択(`shot`)・見送り判定(`leave`)で発火する。
+- `main.ts` がシンクを実装: 各イベントを**現在ポイントのバッファ**に積む(`pushLog`)。
+  サーブ実行時には main 自身も結果(初速・予測着地・ボックス内か)を `sys` として記録する。
+- ポイント開始(`startNextPoint`)でバッファをリセット、ポイント確定(`applyVerdict` の得点時)で
+  `finalizePointLog` が直近1ポイント分を JSON 化して `ui.setDebugDump(json, flagged)` へ渡す。
+  フォルト/ダブルフォルトが起きたポイントは `flagged=true`(UI で警告色)。
+- **バッククォート( ` )** で `ui.setDebugVisible` をトグル。`?debug` URL で初期 ON。
+- デバッグ ON 中はイベントを `ui.pushDebugLine` でライブ表示(画面左下に流れる)。
+- UI(`ui.ts`)のデバッグオーバーレイ: ライブログ窓 + [Copy JSON](クリップボード)+
+  [Show/Hide JSON](全文表示・手動選択用)。直近1ポイントの JSON を Claude Code に渡せる。
+
 ## 16. テスト方針
 
 - `tests/physics.test.ts`: バウンド高の減衰、トップスピンの落下(同初速でフラット
