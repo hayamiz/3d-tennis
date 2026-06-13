@@ -1,0 +1,12 @@
+# 依存関係(npm install で再生成)
+node_modules/
+
+# ビルド成果物
+dist/
+
+# ローカルの実行時ファイル・エディタ設定
+.claude/
+*.log
+
+# OS
+.DS_Store
