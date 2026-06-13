@@ -617,22 +617,28 @@ export const VOLLEY_CHARGE_MUL = 0.4
 
 // ---------------------------------------------------------------------------
 // 打球音(SE)の合成パラメータ — docs/IMPROVEMENTS.md §7 / GAME_DESIGN.md §10
-// 実打球音の音像「鋭いアタック(クリック)+ 短く高めの共鳴(パコッ)+ ごく短い余韻」を
-// パラメトリックに描き分ける。`audio/sfx.ts` の playHit() がこの表を参照して合成する。
-// 設計方針(§7.5): 強打ほど "明るく鋭く"(共鳴/明るさのカットオフを上げる)。
+// 実打球音の音響特性(調査): 基音/ボディ 100〜1800Hz・倍音 1800〜2800Hz、衝撃は
+// ごく短く鋭い。「深み=低域 / クリスプさ=高域 + 鋭いアタック」で "POCK!" になる。
+// これを ① ピッチ降下するボディ(pock の芯)② 明るいクラック(アタック)
+// ③ 1.8〜2.8kHz のシマー(クリスプさ)④ 弦面リング ⑤ 擦過ノイズ で再現する。
+// `audio/sfx.ts` の playHit() がこの表を参照する。設計方針: 強打ほど明るく鋭く。
 // ---------------------------------------------------------------------------
 
 /** 1 ショット種の打球音を決めるパラメータ */
 export interface HitSoundParams {
-  /** 共鳴ボディの中心周波数(Hz)。"パコッ" の音程感(§7.4) */
-  resonanceHz: number
-  /** 共鳴の Q(高いほど締まった澄んだ音。スイートスポット感) */
+  /** ボディ(pock)の基音 = ピッチ降下の着地周波数(Hz)。打球の音程感の芯(§7.4) */
+  bodyHz: number
+  /** ピッチ降下の開始倍率(開始 = bodyHz × bodyStartMul)。大きいほど "トッ" と落ちる */
+  bodyStartMul: number
+  /** 弦面リング共鳴の Q(高いほど締まった澄んだ音。スイートスポット感) */
   q: number
-  /** アタック(クリック)トランジェントの量 0..1。クリスプ感の核 */
+  /** アタック(クラック)の量 0..1。"パッ" の抜け・クリスプ感の核 */
   transient: number
+  /** 高倍音シマー(1.8〜2.8kHz 帯)の量 0..1。明るさ・抜けの良さ */
+  shimmer: number
   /** 擦過/ブラシノイズ成分の量 0..1(スピンの擦り、スライスの切り) */
   noise: number
-  /** 余韻(指数減衰時間, 秒)。30〜100ms 程度 */
+  /** ボディ/リングの減衰時間(秒)。30〜100ms 程度 */
   decay: number
   /** 基準音量 0..1(マスターゲイン前) */
   gain: number
@@ -646,28 +652,54 @@ export interface HitSoundParams {
  * ロブ=柔らかい、ドロップ=触れるだけ。
  */
 export const HIT_SOUND_PARAMS: Record<ShotType, HitSoundParams> = {
-  flat:    { resonanceHz: 1000, q: 14, transient: 1.0,  noise: 0.25, decay: 0.06, gain: 0.5,  sweep: 0 },
-  topspin: { resonanceHz: 780,  q: 10, transient: 0.7,  noise: 0.5,  decay: 0.09, gain: 0.42, sweep: 1 },
-  slice:   { resonanceHz: 1050, q: 16, transient: 0.6,  noise: 0.55, decay: 0.05, gain: 0.36, sweep: -1 },
-  lob:     { resonanceHz: 580,  q: 7,  transient: 0.35, noise: 0.2,  decay: 0.1,  gain: 0.3,  sweep: 0 },
-  drop:    { resonanceHz: 700,  q: 9,  transient: 0.3,  noise: 0.15, decay: 0.03, gain: 0.26, sweep: 0 },
+  flat:    { bodyHz: 920,  bodyStartMul: 2.6, q: 9,  transient: 1.0,  shimmer: 1.0,  noise: 0.25, decay: 0.07,  gain: 0.62, sweep: 0 },
+  topspin: { bodyHz: 760,  bodyStartMul: 2.3, q: 8,  transient: 0.75, shimmer: 0.7,  noise: 0.5,  decay: 0.09,  gain: 0.52, sweep: 1 },
+  slice:   { bodyHz: 1020, bodyStartMul: 2.1, q: 11, transient: 0.7,  shimmer: 0.9,  noise: 0.55, decay: 0.05,  gain: 0.46, sweep: -1 },
+  lob:     { bodyHz: 560,  bodyStartMul: 1.8, q: 6,  transient: 0.4,  shimmer: 0.3,  noise: 0.2,  decay: 0.1,   gain: 0.42, sweep: 0 },
+  drop:    { bodyHz: 680,  bodyStartMul: 1.8, q: 7,  transient: 0.4,  shimmer: 0.35, noise: 0.15, decay: 0.035, gain: 0.36, sweep: 0 },
 }
 
-/** intensity(球速/チャージ由来 0..1)で共鳴中心を持ち上げる量(Hz)。強打ほど明るく */
-export const SFX_HIT_BRIGHTNESS_HZ = 450
-/** intensity で伸ばすクリックのハイパス開放量(Hz)。強打ほど高域が抜ける */
-export const SFX_HIT_CLICK_HZ = 1500
+/** intensity(球速/チャージ由来 0..1)でボディ周波数を持ち上げる割合。強打ほど明るく鋭く */
+export const SFX_HIT_BODY_BRIGHTEN = 0.55
+/** シマー帯の中心 = bodyHz × この倍率(1.8〜2.8kHz 付近に置く)。クリスプさの素 */
+export const SFX_HIT_SHIMMER_MUL = 2.7
+/** クラック(アタック)のハイパス基準カットオフ(Hz)。intensity でさらに上げる */
+export const SFX_HIT_CLICK_HZ = 2200
 /** ラウンドロビンの微ピッチ揺らぎ幅(±割合)。反復感(マシンガン感)を消す(§7.5) */
-export const SFX_HIT_PITCH_JITTER = 0.07
-/** サーブはフラットを増強: 音量・トランジェント・余韻の倍率(§7.4 サーブ行) */
-export const SFX_SERVE_GAIN_MUL = 1.25
+export const SFX_HIT_PITCH_JITTER = 0.06
+/** サーブはフラットを増強: 音量・余韻の倍率(§7.4 サーブ行) */
+export const SFX_SERVE_GAIN_MUL = 1.3
 export const SFX_SERVE_DECAY_MUL = 1.4
 /** ジャストミート: 共鳴の澄み(Q 倍率)とベル倍音の音量(§7.5) */
 export const SFX_JUST_Q_MUL = 1.6
-export const SFX_JUST_BELL_GAIN = 0.18
-/** 差し込まれ/シャンク: 共鳴を鈍く・ノイズ多めにする倍率(詰まった "コツッ", §7.5) */
+export const SFX_JUST_BELL_GAIN = 0.16
+/** 差し込まれ/シャンク: ボディの明るさを鈍く・ノイズ多めにする倍率(詰まった "コツッ", §7.5) */
 export const SFX_MISHIT_Q_MUL = 0.4
 export const SFX_MISHIT_NOISE_MUL = 1.8
 /** 残響(手続き生成 IR + ConvolverNode): ウェット量と IR 長さ(秒)(§7.5) */
-export const SFX_REVERB_WET = 0.1
+export const SFX_REVERB_WET = 0.08
 export const SFX_REVERB_SECONDS = 0.2
+
+// ---------------------------------------------------------------------------
+// 打球音サンプル(効果音ラボ「テニスラケットで打つ」)の再生パラメータ。
+// 実録音の打球音を組み込み、playbackRate(音程)・音量・パン・フィルタで
+// ショット種別を描き分ける(規約上、改変利用は可)。サンプル未ロード時は合成にフォールバック。
+// 出典・利用条件は src/audio/samples/CREDITS.md を参照。
+// ---------------------------------------------------------------------------
+/** ショット種別ごとのサンプル再生レート(1.0=原音。高いほど高く鋭い音程) */
+export const HIT_SAMPLE_RATE: Record<ShotType, number> = {
+  flat: 1.0,
+  topspin: 0.96,
+  slice: 1.08,
+  lob: 0.85,
+  drop: 0.92,
+}
+/** サーブの再生レート(やや低く=重く速い一撃) */
+export const HIT_SAMPLE_SERVE_RATE = 0.9
+/** 差し込まれ(mishit)時の再生レート低下とローパス(鈍く詰まった「コツッ」) */
+export const HIT_SAMPLE_MISHIT_RATE = 0.78
+export const HIT_SAMPLE_MISHIT_LPF = 1700
+/** サンプル全体の基準音量(マスター前)。intensity を別途乗算する */
+export const HIT_SAMPLE_GAIN = 0.95
+/** intensity による再生レートの微増(強打ほどわずかに高く鋭く)。基準 0.6 からの偏差に乗算 */
+export const HIT_SAMPLE_BRIGHTEN = 0.12

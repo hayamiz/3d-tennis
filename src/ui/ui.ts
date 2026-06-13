@@ -1250,6 +1250,16 @@ export class UI {
     })
     screen.appendChild(startBtn)
 
+    // クレジット表記(効果音の出典)。アセット利用に伴う著作表記。
+    const credits = el('div', 'menu-credits')
+    credits.appendChild(document.createTextNode('効果音: '))
+    const creditLink = el('a', 'menu-credits-link', '効果音ラボ') as HTMLAnchorElement
+    creditLink.href = 'https://soundeffect-lab.info/'
+    creditLink.target = '_blank'
+    creditLink.rel = 'noopener noreferrer'
+    credits.appendChild(creditLink)
+    screen.appendChild(credits)
+
     return {
       screen,
       getPlayerPersona: playerPickerResult.getPersonaId,

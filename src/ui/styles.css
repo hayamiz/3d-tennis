@@ -352,6 +352,23 @@ canvas#game-canvas {
   background: #6a9e38;
 }
 
+/* メニュー下部のクレジット表記(効果音の出典) */
+.menu-credits {
+  margin-top: 1.4rem;
+  font-size: 0.78rem;
+  color: rgba(220, 230, 245, 0.55);
+  letter-spacing: 0.04em;
+}
+
+.menu-credits-link {
+  color: rgba(150, 200, 255, 0.8);
+  text-decoration: none;
+}
+
+.menu-credits-link:hover {
+  text-decoration: underline;
+}
+
 /* ===========================================================================
  * HUD
  * ========================================================================= */

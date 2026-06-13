@@ -5,10 +5,17 @@
 // =============================================================================
 import type { SfxName, ShotType } from '../types'
 import {
+  HIT_SAMPLE_BRIGHTEN,
+  HIT_SAMPLE_GAIN,
+  HIT_SAMPLE_MISHIT_LPF,
+  HIT_SAMPLE_MISHIT_RATE,
+  HIT_SAMPLE_RATE,
+  HIT_SAMPLE_SERVE_RATE,
   HIT_SOUND_PARAMS,
-  SFX_HIT_BRIGHTNESS_HZ,
+  SFX_HIT_BODY_BRIGHTEN,
   SFX_HIT_CLICK_HZ,
   SFX_HIT_PITCH_JITTER,
+  SFX_HIT_SHIMMER_MUL,
   SFX_JUST_BELL_GAIN,
   SFX_JUST_Q_MUL,
   SFX_MISHIT_NOISE_MUL,
@@ -18,6 +25,10 @@ import {
   SFX_SERVE_DECAY_MUL,
   SFX_SERVE_GAIN_MUL,
 } from '../constants'
+// 打球音サンプル(効果音ラボ「テニスラケットで打つ」)。Vite が URL 文字列に解決する。
+// ランタイムで外部URLを直リンクせず、ビルドに同梱した自前ホストの音源を読む。
+import tennisRacket1Url from './samples/tennis-racket1.mp3'
+import tennisRacket2Url from './samples/tennis-racket2.mp3'
 
 // ---------------------------------------------------------------------------
 // 内部定数
@@ -77,6 +88,12 @@ export class Sfx {
   private convolver: ConvolverNode | null = null
   /** 残響ウェットゲイン(convolver → master に薄く送る) */
   private reverbWet: GainNode | null = null
+  /** デコード済み打球音サンプル(複数=ラウンドロビンで反復感を消す)。空なら合成にフォールバック */
+  private hitBuffers: AudioBuffer[] = []
+  /** サンプルのロードを一度だけ開始するためのフラグ */
+  private hitLoadStarted = false
+  /** ラウンドロビン用カウンタ */
+  private hitRR = 0
 
   // ---------------------------------------------------------------------------
   // 公開 API
@@ -106,11 +123,37 @@ export class Sfx {
       this.reverbWet.gain.value = SFX_REVERB_WET
       this.convolver.connect(this.reverbWet)
       this.reverbWet.connect(this.master)
+
+      // 打球音サンプルを非同期ロード(完了までは合成音で鳴る)
+      void this.loadHitSamples(this.ctx)
     }
 
     // iOS Safari 等では suspended 状態になることがあるため resume
     if (this.ctx.state === 'suspended') {
       void this.ctx.resume()
+    }
+  }
+
+  /**
+   * 打球音サンプル(効果音ラボ)を取得しデコードして hitBuffers に格納する。
+   * ネットワーク/デコード失敗時は黙って合成音にフォールバックする(例外を投げない)。
+   */
+  private async loadHitSamples(ctx: AudioContext): Promise<void> {
+    if (this.hitLoadStarted) return
+    this.hitLoadStarted = true
+    const urls = [tennisRacket2Url, tennisRacket1Url] // [0]=「パコッ」を主に
+    try {
+      const buffers = await Promise.all(
+        urls.map(async (url) => {
+          const res = await fetch(url)
+          const arr = await res.arrayBuffer()
+          return await ctx.decodeAudioData(arr)
+        }),
+      )
+      this.hitBuffers = buffers
+    } catch {
+      // 失敗時は合成音のまま(hitBuffers は空)
+      this.hitBuffers = []
     }
   }
 
@@ -147,9 +190,99 @@ export class Sfx {
   }
 
   /**
-   * 打球音を再生する。ショット種別ごとにパラメータを切り替えてリアルタイム合成する。
+   * 打球音を再生する。**実録音サンプル(効果音ラボ「テニスラケットで打つ」)**が
+   * ロード済みならそれを再生し、未ロード/失敗時は合成音(playHitSynth)へフォールバックする。
+   * @param shot - ショット種別
+   * @param opts - intensity 0..1 / panX -1..1 / serve / just / mishit(playHitSynth と共通)
+   */
+  playHit(
+    shot: ShotType,
+    opts?: { intensity?: number; panX?: number; serve?: boolean; just?: boolean; mishit?: boolean },
+  ): void {
+    if (!this.ctx || !this.master) return
+    if (this.ctx.state === 'suspended') return
+    if (this.hitBuffers.length > 0) this.playHitSample(shot, opts)
+    else this.playHitSynth(shot, opts)
+  }
+
+  /**
+   * サンプル再生: 実録音の打球音を BufferSource で鳴らし、playbackRate(音程)・
+   * 音量・ステレオパンで加工してショット種別を描き分ける(規約上、改変利用は可)。
+   * ラウンドロビンで複数サンプルを切り替え、微ピッチ揺らぎで反復感を消す。
+   */
+  private playHitSample(
+    shot: ShotType,
+    opts?: { intensity?: number; panX?: number; serve?: boolean; just?: boolean; mishit?: boolean },
+  ): void {
+    const ctx = this.ctx!
+    const master = this.master!
+    const intensity = Math.max(0, Math.min(1, opts?.intensity ?? 1.0))
+    const panX = Math.max(-1, Math.min(1, opts?.panX ?? 0))
+    const serve = opts?.serve ?? false
+    const just = opts?.just ?? false
+    const mishit = opts?.mishit ?? false
+
+    // ラウンドロビンでサンプルを選択
+    const buf = this.hitBuffers[this.hitRR % this.hitBuffers.length]
+    this.hitRR++
+
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+
+    // 音程(playbackRate): ショット種別レート × 強打微増 × 微ジッタ。mishit/serve は専用レート。
+    const jitter = 1 + (Math.random() * 2 - 1) * SFX_HIT_PITCH_JITTER
+    let rate = mishit ? HIT_SAMPLE_MISHIT_RATE : serve ? HIT_SAMPLE_SERVE_RATE : HIT_SAMPLE_RATE[shot]
+    rate *= jitter * (1 + (intensity - 0.6) * HIT_SAMPLE_BRIGHTEN)
+    src.playbackRate.value = Math.max(0.25, rate)
+
+    // 音量(強打ほど大きく)とステレオ定位
+    const gain = ctx.createGain()
+    gain.gain.value = HIT_SAMPLE_GAIN * (0.55 + 0.5 * intensity) * (serve ? SFX_SERVE_GAIN_MUL : 1)
+    const panner = ctx.createStereoPanner()
+    panner.pan.value = panX
+
+    // チェーン: src →(mishit 時 lowpass で鈍く)→ gain → panner → master(+残響センド)
+    let head: AudioNode = src
+    if (mishit) {
+      const lp = ctx.createBiquadFilter()
+      lp.type = 'lowpass'
+      lp.frequency.value = HIT_SAMPLE_MISHIT_LPF
+      src.connect(lp)
+      head = lp
+    }
+    head.connect(gain)
+    gain.connect(panner)
+    panner.connect(master)
+    if (this.convolver) panner.connect(this.convolver)
+    src.start()
+
+    // just: 澄んだベル倍音を一瞬重ね、スイートスポットのきらめきを足す
+    if (just) {
+      const bell = ctx.createOscillator()
+      const bellEnv = ctx.createGain()
+      bell.type = 'sine'
+      bell.frequency.value = 2100
+      bell.connect(bellEnv)
+      bellEnv.connect(panner)
+      const now = ctx.currentTime
+      bellEnv.gain.setValueAtTime(0, now)
+      bellEnv.gain.linearRampToValueAtTime(SFX_JUST_BELL_GAIN * intensity, now + 0.002)
+      bellEnv.gain.exponentialRampToValueAtTime(0.0001, now + 0.08)
+      bell.start(now)
+      bell.stop(now + 0.1)
+    }
+  }
+
+  /**
+   * 【フォールバック】打球音を合成で鳴らす。サンプル未ロード/失敗時のみ使用。
+   * ショット種別ごとにパラメータを切り替えてリアルタイム合成する。
    *
-   * 3レイヤ合成: クリック(鋭いアタック) + 共鳴ボディ("パコッ") + ブラシノイズ(擦過)。
+   * 実テニス打球音の "POCK!" を狙った 5 レイヤ合成:
+   *   ① ボディ(pock): ピッチ降下する三角波。音程感のある芯=パンチ。
+   *   ② クラック(アタック): 明るいハイパスノイズの鋭い立ち上がり。抜け・クリスプ感。
+   *   ③ シマー: 1.8〜2.8kHz 帯のバンドパスノイズ。高域の煌めき(クリスプさ)。
+   *   ④ 弦面リング: bodyHz の高Qバンドパスノイズの短い余韻。
+   *   ⑤ ブラシ: 擦過ノイズ(スピン/スライスの sweep)。
    * 全レイヤを StereoPannerNode(panX) → master に通し、残響センド(ConvolverNode)にも薄く送る。
    *
    * @param shot  - ショット種別
@@ -157,10 +290,10 @@ export class Sfx {
    *   - intensity 0..1(デフォルト 1.0): 球威/チャージ由来。強いほど明るく鋭く・大きい。
    *   - panX -1..1(デフォルト 0): ステレオ定位。打点の x 座標を渡す。
    *   - serve true: フラットを増強(SFX_SERVE_GAIN_MUL/DECAY_MUL 適用)。
-   *   - just true: 最もクリアな共鳴(Q × SFX_JUST_Q_MUL) + ごく短いベル倍音。
-   *   - mishit true: 共鳴を鈍く(Q × SFX_MISHIT_Q_MUL)・ノイズ多め・詰まった「コツッ」。
+   *   - just true: 最もクリアなリング(Q × SFX_JUST_Q_MUL) + ごく短いベル倍音。
+   *   - mishit true: ボディを鈍く・ノイズ多め・詰まった「コツッ」(芯を外した感)。
    */
-  playHit(
+  private playHitSynth(
     shot: ShotType,
     opts?: { intensity?: number; panX?: number; serve?: boolean; just?: boolean; mishit?: boolean },
   ): void {
@@ -187,22 +320,13 @@ export class Sfx {
     // ラウンドロビン用の微ピッチ揺らぎ(反復感を消す)
     const pitchJitter = 1.0 + (Math.random() * 2 - 1) * SFX_HIT_PITCH_JITTER
 
-    // --- Q 係数の決定 ---
-    let qMul = 1.0
-    if (just) qMul *= SFX_JUST_Q_MUL
-    if (mishit) qMul *= SFX_MISHIT_Q_MUL
-    const effectiveQ = p.q * qMul
+    // --- 音量・余韻 ---
+    const baseGain = p.gain * intensity * (serve ? SFX_SERVE_GAIN_MUL : 1.0)
+    const effectiveDecay = p.decay * (serve ? SFX_SERVE_DECAY_MUL : 1.0)
 
-    // --- 音量計算 ---
-    const serveMul = serve ? SFX_SERVE_GAIN_MUL : 1.0
-    const baseGain = p.gain * intensity * serveMul
-
-    // --- 余韻の減衰時間 ---
-    const decayMul = serve ? SFX_SERVE_DECAY_MUL : 1.0
-    const effectiveDecay = p.decay * decayMul
-
-    // --- 共鳴中心周波数(intensity と微ピッチ揺らぎを加味) ---
-    const resonanceHz = (p.resonanceHz + intensity * SFX_HIT_BRIGHTNESS_HZ) * pitchJitter
+    // --- 明るさ(強打ほど明るく鋭く。差し込まれは鈍く) ---
+    // ボディ/シマー/クラックの周波数を持ち上げる係数。mishit は芯を外して曇らせる。
+    const brighten = (1.0 + intensity * SFX_HIT_BODY_BRIGHTEN) * (mishit ? 0.6 : 1.0)
 
     // --- ステレオパン(全レイヤを束ねる) ---
     const panner = ctx.createStereoPanner()
@@ -214,72 +338,90 @@ export class Sfx {
     const now = ctx.currentTime
 
     // =========================================================================
-    // レイヤ1: クリック(アタック)
-    // ごく短いノイズ(~2ms)をハイパスで通した鋭い立ち上がり。クリスプ感の核。
+    // レイヤ1: ボディ(pock) — 音程感のある芯。打球のパンチはここが主役。
+    // 三角波を高い周波数から bodyHz へ素早く降下させ、"トッ/パコッ" の芯を作る。
+    // mishit は降下幅と明るさを抑え、波形も鈍い sine にして「詰まり」を出す。
     // =========================================================================
-    const clickDuration = 0.004 // ~4ms(アタックの核)
-    const clickNoise = ctx.createBufferSource()
-    clickNoise.buffer = noiseBuf
-    // intensity が高いほどハイパスのカットオフを上げて高域を抜く
-    const clickHp = ctx.createBiquadFilter()
-    clickHp.type = 'highpass'
-    clickHp.frequency.value = 4000 + intensity * SFX_HIT_CLICK_HZ
-    const clickEnv = ctx.createGain()
-    const clickPeak = 0.35 * p.transient * baseGain
-    clickNoise.connect(clickHp)
-    clickHp.connect(clickEnv)
-    clickEnv.connect(panner)
-    applyEnvelope(clickEnv, ctx, clickPeak, 0.001, 0.003)
-    clickNoise.start(now)
-    clickNoise.stop(now + clickDuration)
+    const bodyEnd = p.bodyHz * brighten * pitchJitter
+    const bodyStart = bodyEnd * p.bodyStartMul
+    const bodyOsc = ctx.createOscillator()
+    bodyOsc.type = mishit ? 'sine' : 'triangle'
+    bodyOsc.frequency.setValueAtTime(bodyStart, now)
+    // 12〜18ms で着地周波数まで一気に降下(短いほど "アタッキー")
+    bodyOsc.frequency.exponentialRampToValueAtTime(bodyEnd, now + 0.012 + effectiveDecay * 0.12)
+    const bodyEnv = ctx.createGain()
+    bodyOsc.connect(bodyEnv)
+    bodyEnv.connect(panner)
+    applyEnvelope(bodyEnv, ctx, 0.7 * baseGain, 0.0008, effectiveDecay)
+    bodyOsc.start(now)
+    bodyOsc.stop(now + effectiveDecay + 0.02)
 
     // =========================================================================
-    // レイヤ2: 共鳴ボディ("パコッ")
-    // ノイズを高Qバンドパスで鳴らす。just で Q 上昇・mishit で Q 下降。
-    // sweep≠0 のとき中心周波数を短時間でスイープして擦り/切り感を出す。
+    // レイヤ2: クラック(アタック) — ごく短いハイパスノイズの鋭い立ち上がり。
+    // 抜けの良い "パッ"。強打ほどカットオフを上げて高域を抜き、クリスプにする。
     // =========================================================================
-    const resoNoise = ctx.createBufferSource()
-    resoNoise.buffer = noiseBuf
-    const resoBp = ctx.createBiquadFilter()
-    resoBp.type = 'bandpass'
-    resoBp.frequency.setValueAtTime(resonanceHz, now)
-    // sweep: +1=上昇(topspin 擦り上げ), -1=下降(slice 切り), 0=なし
-    if (p.sweep !== 0) {
-      const sweepTarget = resonanceHz * (1.0 + p.sweep * 0.35)
-      const sweepTime = effectiveDecay * 0.6
-      resoBp.frequency.exponentialRampToValueAtTime(sweepTarget, now + sweepTime)
+    const crackNoise = ctx.createBufferSource()
+    crackNoise.buffer = noiseBuf
+    const crackHp = ctx.createBiquadFilter()
+    crackHp.type = 'highpass'
+    crackHp.frequency.value = (SFX_HIT_CLICK_HZ + intensity * 1800) * (mishit ? 0.5 : 1.0)
+    const crackEnv = ctx.createGain()
+    crackNoise.connect(crackHp)
+    crackHp.connect(crackEnv)
+    crackEnv.connect(panner)
+    applyEnvelope(crackEnv, ctx, 0.5 * p.transient * baseGain, 0.0005, 0.004)
+    crackNoise.start(now)
+    crackNoise.stop(now + 0.006)
+
+    // =========================================================================
+    // レイヤ3: シマー — 1.8〜2.8kHz 帯のバンドパスノイズ。高域の煌めき=クリスプさ。
+    // 調査で「クリスプさ=高倍音(1800〜2800Hz)」。mishit ではほぼ消す。
+    // =========================================================================
+    const shimmerAmt = p.shimmer * intensity * (mishit ? 0.2 : 1.0)
+    if (shimmerAmt > 0.01) {
+      const shimNoise = ctx.createBufferSource()
+      shimNoise.buffer = noiseBuf
+      const shimBp = ctx.createBiquadFilter()
+      shimBp.type = 'bandpass'
+      shimBp.frequency.value = p.bodyHz * SFX_HIT_SHIMMER_MUL * brighten * pitchJitter
+      shimBp.Q.value = 3.5
+      const shimEnv = ctx.createGain()
+      shimNoise.connect(shimBp)
+      shimBp.connect(shimEnv)
+      shimEnv.connect(panner)
+      applyEnvelope(shimEnv, ctx, 0.4 * shimmerAmt * baseGain, 0.001, 0.025)
+      shimNoise.start(now)
+      shimNoise.stop(now + 0.035)
     }
-    resoBp.Q.value = effectiveQ
-    const resoEnv = ctx.createGain()
-    const resoPeak = 0.55 * baseGain
-    resoNoise.connect(resoBp)
-    resoBp.connect(resoEnv)
-    resoEnv.connect(panner)
-    // 攻撃時間 ~1ms、減衰は effectiveDecay
-    applyEnvelope(resoEnv, ctx, resoPeak, 0.001, effectiveDecay)
-    resoNoise.start(now)
-    resoNoise.stop(now + effectiveDecay + 0.02)
-
-    // 共鳴の1オクターブ下を薄く重ねて厚みを足す(低域は控えめにして濁りを避ける)
-    const resoLowNoise = ctx.createBufferSource()
-    resoLowNoise.buffer = noiseBuf
-    const resoLowBp = ctx.createBiquadFilter()
-    resoLowBp.type = 'bandpass'
-    resoLowBp.frequency.value = resonanceHz * 0.5
-    resoLowBp.Q.value = effectiveQ * 0.5
-    const resoLowEnv = ctx.createGain()
-    const resoLowPeak = 0.12 * baseGain
-    resoLowNoise.connect(resoLowBp)
-    resoLowBp.connect(resoLowEnv)
-    resoLowEnv.connect(panner)
-    applyEnvelope(resoLowEnv, ctx, resoLowPeak, 0.001, effectiveDecay * 0.7)
-    resoLowNoise.start(now)
-    resoLowNoise.stop(now + effectiveDecay + 0.01)
 
     // =========================================================================
-    // レイヤ3: ブラシ/擦過ノイズ
-    // p.noise(mishit 時は ×SFX_MISHIT_NOISE_MUL)に比例した帯域ノイズ。
-    // sweep 方向にスイープさせて topspin の擦り上げ/slice の切りを表現。
+    // レイヤ4: 弦面リング — bodyHz の高Qバンドパスノイズの短い余韻。
+    // just で Q 上昇(澄む)・mishit で Q 下降(鈍る)。sweep で擦り/切りを付加。
+    // =========================================================================
+    let qMul = 1.0
+    if (just) qMul *= SFX_JUST_Q_MUL
+    if (mishit) qMul *= SFX_MISHIT_Q_MUL
+    const ringNoise = ctx.createBufferSource()
+    ringNoise.buffer = noiseBuf
+    const ringBp = ctx.createBiquadFilter()
+    ringBp.type = 'bandpass'
+    const ringHz = bodyEnd
+    ringBp.frequency.setValueAtTime(ringHz, now)
+    if (p.sweep !== 0) {
+      ringBp.frequency.exponentialRampToValueAtTime(ringHz * (1.0 + p.sweep * 0.3), now + effectiveDecay * 0.6)
+    }
+    ringBp.Q.value = p.q * qMul
+    const ringEnv = ctx.createGain()
+    ringNoise.connect(ringBp)
+    ringBp.connect(ringEnv)
+    ringEnv.connect(panner)
+    applyEnvelope(ringEnv, ctx, 0.22 * baseGain, 0.001, effectiveDecay * 0.9)
+    ringNoise.start(now)
+    ringNoise.stop(now + effectiveDecay + 0.02)
+
+    // =========================================================================
+    // レイヤ5: ブラシ/擦過ノイズ — スピン/スライスの擦り。sweep 方向にスイープ。
+    // mishit 時は ×SFX_MISHIT_NOISE_MUL でノイズを増やし「詰まり」を強調。
     // =========================================================================
     const effectiveNoise = mishit ? p.noise * SFX_MISHIT_NOISE_MUL : p.noise
     if (effectiveNoise > 0.01) {
@@ -287,35 +429,29 @@ export class Sfx {
       brushNoise.buffer = noiseBuf
       const brushBp = ctx.createBiquadFilter()
       brushBp.type = 'bandpass'
-      // ブラシは共鳴より少し上の帯域(1.3倍付近)
-      const brushHz = resonanceHz * 1.3
+      const brushHz = bodyEnd * 1.6
       brushBp.frequency.setValueAtTime(brushHz, now)
       if (p.sweep !== 0) {
-        const brushTarget = brushHz * (1.0 + p.sweep * 0.5)
-        const brushSweepTime = effectiveDecay * 0.8
-        brushBp.frequency.exponentialRampToValueAtTime(brushTarget, now + brushSweepTime)
+        brushBp.frequency.exponentialRampToValueAtTime(brushHz * (1.0 + p.sweep * 0.5), now + effectiveDecay * 0.8)
       }
       brushBp.Q.value = 1.5
       const brushEnv = ctx.createGain()
-      const brushPeak = 0.3 * effectiveNoise * baseGain
       brushNoise.connect(brushBp)
       brushBp.connect(brushEnv)
       brushEnv.connect(panner)
-      applyEnvelope(brushEnv, ctx, brushPeak, 0.002, effectiveDecay * 1.2)
+      applyEnvelope(brushEnv, ctx, 0.28 * effectiveNoise * baseGain, 0.002, effectiveDecay * 1.2)
       brushNoise.start(now)
       brushNoise.stop(now + effectiveDecay * 1.5)
     }
 
     // =========================================================================
-    // just のベル倍音
-    // 共鳴より少し上の周波数の sine を一瞬重ね、澄んだ「ピン」を足す。
+    // just のベル倍音 — ボディ1オクターブ上の sine を一瞬重ね、澄んだ「ピン」を足す。
     // =========================================================================
     if (just) {
       const bellOsc = ctx.createOscillator()
       const bellEnv = ctx.createGain()
       bellOsc.type = 'sine'
-      // 共鳴より短3度上(≈1.19倍)のベル音
-      bellOsc.frequency.value = resonanceHz * 1.19
+      bellOsc.frequency.value = bodyEnd * 2.0
       bellOsc.connect(bellEnv)
       bellEnv.connect(panner)
       applyEnvelope(bellEnv, ctx, SFX_JUST_BELL_GAIN * intensity, 0.001, effectiveDecay * 0.6)
