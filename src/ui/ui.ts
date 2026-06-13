@@ -309,6 +309,13 @@ export class UI {
   private readonly hudChargeBar: HTMLElement
   /** チャージバーの塗り(幅 % で変化) */
   private readonly hudChargeBarFill: HTMLElement
+  /** マッチ情報(ペルソナ名・難易度)表示 */
+  private readonly hudMiPlayer: HTMLElement
+  private readonly hudMiDiff: HTMLElement
+  private readonly hudMiOpponent: HTMLElement
+
+  /** ポーズ画面のコンテナ */
+  private readonly pauseScreen: HTMLElement
 
   // -------------------------------------------------------------------------
   // デバッグオーバーレイ関連フィールド
@@ -380,10 +387,17 @@ export class UI {
     this.hudBannerText = hudRefs.bannerText
     this.hudChargeBar = hudRefs.chargeBar
     this.hudChargeBarFill = hudRefs.chargeBarFill
+    this.hudMiPlayer = hudRefs.miPlayer
+    this.hudMiDiff = hudRefs.miDiff
+    this.hudMiOpponent = hudRefs.miOpponent
+
+    // ポーズ画面を構築
+    this.pauseScreen = this.buildPauseScreen()
 
     root.appendChild(this.menuScreen)
     root.appendChild(this.hudScreen)
     root.appendChild(this.matchOverScreen)
+    root.appendChild(this.pauseScreen)
 
     // デバッグオーバーレイを構築して root に追加
     const debugRefs = this.buildDebugOverlay()
@@ -412,8 +426,21 @@ export class UI {
     this.menuScreen.classList.add('hidden')
     this.hudScreen.classList.remove('hidden')
     this.matchOverScreen.classList.add('hidden')
+    this.pauseScreen.classList.add('hidden')
     // キャッシュを無効化して次フレームに全更新させる
     this.invalidateCache()
+  }
+
+  /** ポーズ画面の表示/非表示(プレイ中の Esc トグル) */
+  setPaused(on: boolean): void {
+    this.pauseScreen.classList.toggle('hidden', !on)
+  }
+
+  /** スコアボードにマッチ情報(ペルソナ名・難易度)を設定する(マッチ開始時に1回) */
+  setMatchInfo(info: { difficulty: string; playerName: string; opponentName: string }): void {
+    this.hudMiPlayer.textContent = info.playerName
+    this.hudMiOpponent.textContent = info.opponentName
+    this.hudMiDiff.textContent = info.difficulty
   }
 
   /**
@@ -789,6 +816,30 @@ export class UI {
   }
 
   // -------------------------------------------------------------------------
+  // ポーズ画面構築
+  // -------------------------------------------------------------------------
+
+  /** ポーズ画面(Esc で表示)。再開 / ゲーム終了ボタンを持つ。 */
+  private buildPauseScreen(): HTMLElement {
+    const screen = el('div', 'screen-pause hidden')
+    const box = el('div', 'pause-box')
+    box.appendChild(el('div', 'pause-title', 'PAUSED'))
+    box.appendChild(el('div', 'pause-hint', 'Esc で再開'))
+
+    const btns = el('div', 'pause-buttons')
+    const resumeBtn = el('button', 'pause-btn resume', '再開')
+    resumeBtn.addEventListener('click', () => this.handlers.onResume())
+    const quitBtn = el('button', 'pause-btn quit', 'ゲーム終了')
+    quitBtn.addEventListener('click', () => this.handlers.onQuit())
+    btns.appendChild(resumeBtn)
+    btns.appendChild(quitBtn)
+    box.appendChild(btns)
+
+    screen.appendChild(box)
+    return screen
+  }
+
+  // -------------------------------------------------------------------------
   // メニュー画面構築
   // -------------------------------------------------------------------------
 
@@ -880,32 +931,7 @@ export class UI {
     personaSection.appendChild(personaRow)
     screen.appendChild(personaSection)
 
-    // 操作説明表
-    const ctrlWrap = el('div', 'menu-controls')
-    ctrlWrap.appendChild(el('div', 'controls-label', 'Controls'))
-    const table = el('table', 'controls-table')
-    const controlRows: Array<[string, string]> = [
-      ['W / A / S / D  or  ↑←↓→', 'Move'],
-      ['Shift', 'Sprint'],
-      ['J', 'Flat shot'],
-      ['K', 'Topspin'],
-      ['L', 'Slice'],
-      ['U', 'Lob'],
-      ['I', 'Drop shot'],
-      ['Hold shot key', 'Charge (stronger, but risky if overcharged)'],
-      ['Move + Shot key', 'Aim direction'],
-      ['Space (serve)', 'Power meter — release to serve'],
-      ['J / K / L (serve)', 'Serve type: Flat / Kick / Slice'],
-      ['Esc', 'Pause / Title'],
-    ]
-    controlRows.forEach(([key, desc]) => {
-      const tr = el('tr')
-      tr.appendChild(el('td', undefined, key))
-      tr.appendChild(el('td', undefined, desc))
-      table.appendChild(tr)
-    })
-    ctrlWrap.appendChild(table)
-    screen.appendChild(ctrlWrap)
+    // 操作説明はメニューには出さない(プレイ中の画面端パネルで常時表示)。
 
     // スタートボタン
     const startBtn = el('button', 'start-btn', 'START')
@@ -949,6 +975,9 @@ export class UI {
     bannerText: HTMLElement
     chargeBar: HTMLElement
     chargeBarFill: HTMLElement
+    miPlayer: HTMLElement
+    miDiff: HTMLElement
+    miOpponent: HTMLElement
   } {
     // --- スコアボード ---
     const scoreboard = el('div', 'hud-scoreboard')
@@ -991,6 +1020,16 @@ export class UI {
     pointsRow.appendChild(pointSep)
     pointsRow.appendChild(pointOpponentVal)
     scoreboard.appendChild(pointsRow)
+
+    // マッチ情報行(ペルソナ名 + 難易度)。setMatchInfo で内容を設定する。
+    const matchInfoRow = el('div', 'hud-matchinfo')
+    const miPlayer = el('span', 'mi-persona mi-player', '')
+    const miDiff = el('span', 'mi-diff', '')
+    const miOpponent = el('span', 'mi-persona mi-opponent', '')
+    matchInfoRow.appendChild(miPlayer)
+    matchInfoRow.appendChild(miDiff)
+    matchInfoRow.appendChild(miOpponent)
+    scoreboard.appendChild(matchInfoRow)
 
     container.appendChild(scoreboard)
 
@@ -1067,7 +1106,8 @@ export class UI {
       ['移動+ショット', 'コース指定'],
       ['Space', 'サーブ'],
       ['J/K/L(サーブ)', 'フラット/キック/スライス'],
-      ['Esc', 'タイトル'],
+      ['Esc', 'ポーズ'],
+      ['0', 'デバッグ表示'],
     ]
     const keysTable = el('table', 'keys-table')
     keyRows.forEach(([key, desc]) => {
@@ -1096,6 +1136,9 @@ export class UI {
       bannerText,
       chargeBar,
       chargeBarFill,
+      miPlayer,
+      miDiff,
+      miOpponent,
     }
   }
 

@@ -448,7 +448,9 @@ canvas#game-canvas {
 /* --- サーブ番号表示 --- */
 .hud-serve-label {
   position: absolute;
-  top: 108px;
+  /* スコアボード(ペルソナ名行を含む)の下に来るよう余裕を持たせる
+     (108px だとマッチ情報行と重なるため引き下げ) */
+  top: 142px;
   left: 50%;
   transform: translateX(-50%);
   font-size: clamp(0.8rem, 1.4vw, 1rem);
@@ -1061,4 +1063,95 @@ canvas#game-canvas {
  * ========================================================================= */
 .hidden {
   display: none !important;
+}
+
+/* ===========================================================================
+ * マッチ情報(スコアボード内: ペルソナ名 + 難易度)
+ * ========================================================================= */
+.hud-matchinfo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+  font-size: clamp(0.62rem, 1vw, 0.78rem);
+  letter-spacing: 0.04em;
+  color: #aab8c8;
+  white-space: nowrap;
+}
+.hud-matchinfo .mi-player { color: #7fb3ff; font-weight: 700; }
+.hud-matchinfo .mi-opponent { color: #ff8f8f; font-weight: 700; }
+.hud-matchinfo .mi-diff {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #c8d4a0;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.86em;
+}
+
+/* ===========================================================================
+ * ポーズ画面
+ * ========================================================================= */
+.screen-pause {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  pointer-events: all;
+  z-index: 20;
+}
+.pause-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.2rem;
+  padding: clamp(1.6rem, 5vh, 3rem) clamp(2rem, 6vw, 4rem);
+  background: rgba(16, 20, 30, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+.pause-title {
+  font-size: clamp(1.8rem, 5vw, 3rem);
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(180, 255, 80, 0.4);
+}
+.pause-hint {
+  font-size: clamp(0.8rem, 1.6vw, 1rem);
+  color: #8a9ab0;
+  letter-spacing: 0.1em;
+}
+.pause-buttons {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.4rem;
+}
+.pause-btn {
+  padding: 0.7rem 1.6rem;
+  border-radius: 8px;
+  border: 2px solid #3a4a5a;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d0dae6;
+  font-size: clamp(0.95rem, 1.8vw, 1.15rem);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.pause-btn.resume {
+  border-color: #5a9a3a;
+  background: rgba(122, 200, 74, 0.16);
+  color: #d8f0b0;
+}
+.pause-btn.resume:hover { background: rgba(122, 200, 74, 0.3); }
+.pause-btn.quit:hover {
+  border-color: #c05050;
+  background: rgba(200, 70, 70, 0.18);
+  color: #ffc0c0;
 }

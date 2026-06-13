@@ -440,6 +440,8 @@ export interface UIHandlers {
   onStart(config: MatchConfig): void
   onRematch(): void
   onQuit(): void
+  /** ポーズ画面の「再開」。プレイを再開する */
+  onResume(): void
 }
 
 // ---------------------------------------------------------------------------

@@ -520,7 +520,8 @@ rAF(t):
 - ポイント開始(`startNextPoint`)でバッファをリセット、ポイント確定(`applyVerdict` の得点時)で
   `finalizePointLog` が直近1ポイント分を JSON 化して `ui.setDebugDump(json, flagged)` へ渡す。
   フォルト/ダブルフォルトが起きたポイントは `flagged=true`(UI で警告色)。
-- **バッククォート( ` )** で `ui.setDebugVisible` をトグル。`?debug` URL で初期 ON。
+- **「0」キー**(Digit0 / Numpad0)で `ui.setDebugVisible` をトグル。`?debug` URL で初期 ON。
+  (旧バッククォートはキー配列により反応しないことがあったため数字キーへ変更。)
 - デバッグ ON 中はイベントを `ui.pushDebugLine` でライブ表示(画面左下に流れる)。
 - UI(`ui.ts`)のデバッグオーバーレイ: ライブログ窓 + [Copy JSON](クリップボード)+
   [Show/Hide JSON](全文表示・手動選択用)。直近1ポイントの JSON を Claude Code に渡せる。

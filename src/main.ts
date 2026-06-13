@@ -77,9 +77,10 @@ window.addEventListener('pointerdown', resumeAudio, { once: true })
 window.addEventListener('keydown', resumeAudio, { once: true })
 window.addEventListener('resize', () => renderer.resize())
 
-// バッククォート( ` )でデバッグオーバーレイ表示をトグル(docs/ARCHITECTURE.md §17)
+// 「0」キーでデバッグオーバーレイ表示をトグル(docs/ARCHITECTURE.md §17)。
+// 旧バッククォート( ` )は配列によって反応しないため数字キーに変更(Backquote も一応許可)。
 window.addEventListener('keydown', (ev) => {
-  if (ev.code === 'Backquote') {
+  if (ev.code === 'Digit0' || ev.code === 'Numpad0' || ev.code === 'Backquote') {
     debugMode = !debugMode
     ui.setDebugVisible(debugMode)
   }
@@ -130,6 +131,7 @@ interface DebugEntry {
   data?: Record<string, unknown>
 }
 let debugMode = new URLSearchParams(location.search).has('debug') // ?debug で初期 ON
+let paused = false // プレイ中の一時停止(Esc でトグル)
 let pointClock = 0
 let pointLog: DebugEntry[] = []
 let pointFlagged = false // このポイントで異常(フォルト等)が起きたか
@@ -408,13 +410,23 @@ function startMatch(cfg: MatchConfig): void {
   serveNumber = 1
   pointsInGame = 0
   banner = null
+  paused = false
+  ui.setPaused(false)
+  // スコアボードにマッチ情報(ペルソナ名・難易度)を表示
+  ui.setMatchInfo({
+    difficulty: cfg.difficulty,
+    playerName: playerPersona.name,
+    opponentName: opponentPersona.name,
+  })
   ui.showHud()
   startNextPoint()
 }
 
 function quitToMenu(): void {
   phase = 'menu'
+  paused = false
   ballSim.state.inPlay = false
+  ui.setPaused(false)
   ui.showMenu()
 }
 
@@ -431,6 +443,11 @@ const ui = new UI(uiRoot, {
     sfx.play('ui')
     quitToMenu()
   },
+  onResume: () => {
+    sfx.play('ui')
+    paused = false
+    ui.setPaused(false)
+  },
 })
 
 // ---------------------------------------------------------------------------
@@ -438,11 +455,15 @@ const ui = new UI(uiRoot, {
 // ---------------------------------------------------------------------------
 function physicsStep(): void {
   currentInput = input.poll()
-  if (currentInput.escPressed && phase !== 'menu' && phase !== 'matchOver') {
-    quitToMenu()
-    return
+  // プレイ中の Esc はポーズ/再開のトグルのみ(うっかり終了を防ぐ)。
+  // ポーズ中にマウスで「ゲーム終了」を押すとメニューへ戻る(onQuit)。
+  const inPlay = phase === 'serve' || phase === 'rally' || phase === 'pointOver'
+  if (currentInput.escPressed && inPlay) {
+    paused = !paused
+    ui.setPaused(paused)
   }
   if (phase === 'menu' || phase === 'matchOver') return
+  if (paused) return // ポーズ中は物理を進めない(描画は現フレームを維持)
 
   // ポイント中(serve / rally)の経過時間(デバッグログのタイムスタンプ用)
   if (phase === 'serve' || phase === 'rally') pointClock += PHYS_DT
