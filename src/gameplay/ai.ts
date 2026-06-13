@@ -135,6 +135,8 @@ export class AIController implements Controller {
   private hasServedThisPhase = false
   /** このポイントで AI が選んだサーブ種類(resetForPoint か updateServe で決定) */
   private chosenServeType: ServeType = 'flat'
+  /** このポイントのサーブサイド(世界座標 +x 側=true)。レシーブ位置取りに使う */
+  private servingFromRight = false
 
   // ビュー(参照は固定。中身を更新する)
   private readonly _view: PlayerView
@@ -180,6 +182,7 @@ export class AIController implements Controller {
   resetForPoint(servingSide: Side, serveFromRight: boolean): void {
     const sign = sideSign(this.side) // opponent => -1
     const amServing = servingSide === this.side
+    this.servingFromRight = serveFromRight
 
     // サーブ位置はポイント合計の偶奇で決まるが、ここでは serveFromRight を
     // サーバー視点の左右として受け取る。AI(奥側)から見た右はプレイヤーの左。
@@ -350,8 +353,9 @@ export class AIController implements Controller {
   // -------------------------------------------------------------------------
   private updateServe(dt: number, ctx: ControlContext): void {
     if (!ctx.isServing) {
-      // 自分がサーバーでない(レシーブ側)。定位置で待つ。
-      this.vel.set(0, 0, 0)
+      // レシーブ側: プレイヤーのサーブ位置に応じてリターンしやすい位置へ移動する
+      // (賢い AI ほど的確に。GAME_DESIGN §7.1)。
+      this.positionForReturn(dt, ctx)
       return
     }
     if (this.hasServedThisPhase) return
@@ -397,6 +401,47 @@ export class AIController implements Controller {
     // サーブは常にフォアハンド(利き手側)とみなす
     this.swingSide = 'fore'
     this.lastShot = 'flat'
+  }
+
+  // -------------------------------------------------------------------------
+  // レシーブ位置取り(プレイヤーのサーブ位置を読んで受けやすい場所へ)
+  // テニスのセオリー: サーバーから打てる両極(ワイド/センターT)のサーブ軌道を
+  // レシーバーの構え位置まで延長し、その二等分点に立つと両方に等しく備えられる。
+  // returnPositioning(難易度)で、汎用の定位置からこの最適点へどれだけ寄せるかを決める。
+  // -------------------------------------------------------------------------
+  private positionForReturn(dt: number, ctx: ControlContext): void {
+    const sign = sideSign(this.side) // -1(opponent)
+    // 受けるサービスボックスは「サーバーの対角」。
+    // servingFromRight(世界 +x 側)のとき、対角ボックスは -x 側(main の規約と一致)。
+    const boxSign = this.servingFromRight ? -1 : 1
+    const wideX = boxSign * COURT_HALF_WIDTH // ボックスのサイドライン側(ワイド)
+    const tX = 0 // センターライン側(T)
+
+    // 代表的なサーブ着地深さ(サービスライン手前)と、レシーバーの構え深さ(ベースライン後方)
+    const boxZ = sign * (SERVICE_LINE_Z - 0.5)
+    const rz = sign * (COURT_HALF_LENGTH + 0.3)
+
+    const s = ctx.rival.pos // サーバー(プレイヤー)の現在位置
+    // サーバー → ボックス隅 の直線を、レシーバー構え深さ rz まで延長した x を求める
+    const projectX = (cornerX: number): number => {
+      const dz = boxZ - s.z
+      if (Math.abs(dz) < 1e-4) return cornerX
+      const t = (rz - s.z) / dz
+      return s.x + t * (cornerX - s.x)
+    }
+    const idealX = (projectX(wideX) + projectX(tX)) / 2 // 両極の二等分点
+
+    // 汎用の定位置(下手な AI のデフォルト)。reset と同じ ±half*0.5。
+    const genericX = boxSign * COURT_HALF_WIDTH * 0.5
+
+    const skill = clamp(this.profile.returnPositioning, 0, 1)
+    let targetX = lerp(genericX, idealX, skill)
+    targetX = clamp(targetX, -MOVE_X_LIMIT, MOVE_X_LIMIT)
+
+    // 目標を更新して移動(歩行で寄せる。距離が小さいのでスプリントはしない)
+    this.targetPos.set(targetX, 0, rz)
+    this.mode = 'intercept'
+    this.moveToward(dt)
   }
 
   // -------------------------------------------------------------------------

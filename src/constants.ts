@@ -247,17 +247,17 @@ export const AI_PROFILES: Record<Difficulty, AIProfile> = {
   easy: {
     reactionDelay: 0.42, speedScale: 0.82, extraAimNoise: 1.4,
     aggressiveness: 0.25, blunderRate: 0.08, servePower1st: 0.65, servePower2nd: 0.5,
-    leaveOutClearProb: 0.82, leaveOutEdgeProb: 0.35,
+    leaveOutClearProb: 0.82, leaveOutEdgeProb: 0.35, returnPositioning: 0.25,
   },
   normal: {
     reactionDelay: 0.28, speedScale: 0.95, extraAimNoise: 0.7,
     aggressiveness: 0.5, blunderRate: 0.04, servePower1st: 0.78, servePower2nd: 0.6,
-    leaveOutClearProb: 0.92, leaveOutEdgeProb: 0.45,
+    leaveOutClearProb: 0.92, leaveOutEdgeProb: 0.45, returnPositioning: 0.6,
   },
   hard: {
     reactionDelay: 0.16, speedScale: 1.05, extraAimNoise: 0.3,
     aggressiveness: 0.75, blunderRate: 0.015, servePower1st: 0.84, servePower2nd: 0.68,
-    leaveOutClearProb: 0.98, leaveOutEdgeProb: 0.55,
+    leaveOutClearProb: 0.98, leaveOutEdgeProb: 0.55, returnPositioning: 1.0,
   },
 }
 

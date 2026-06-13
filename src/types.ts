@@ -282,6 +282,12 @@ export interface AIProfile {
    * 実際の見送り確率は outDist に応じて leaveOutEdgeProb..leaveOutClearProb を補間。
    */
   leaveOutEdgeProb: number
+  /**
+   * サーブのリターン位置取りの上手さ 0..1(docs/GAME_DESIGN.md §7.1)。
+   * 1 ほどプレイヤーのサーブ位置を読んで最適な受け位置(両極サーブの二等分点)に
+   * 寄せる。0 に近いほど汎用的な定位置のまま。難易度が高いほど高い。
+   */
+  returnPositioning: number
 }
 
 // ---------------------------------------------------------------------------
