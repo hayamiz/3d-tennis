@@ -1246,6 +1246,37 @@ canvas#game-canvas {
   display: block;
 }
 
+/* フッタ: 変更点を JSON コピー */
+.tuning-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.tuning-copy-btn {
+  pointer-events: auto;
+  background: rgba(122, 176, 74, 0.18);
+  border: 1px solid rgba(122, 176, 74, 0.5);
+  border-radius: 5px;
+  color: #d8f090;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.tuning-copy-btn:hover {
+  background: rgba(122, 176, 74, 0.34);
+}
+
+.tuning-copy-feedback {
+  font-size: 11px;
+  color: #a8d060;
+}
+
 /* ===========================================================================
  * モメンタムインジケータ(スコアボード内 / HUD)— IMPROVEMENTS §4 高
  * momentum > 0(連続得点中)のときのみ表示。

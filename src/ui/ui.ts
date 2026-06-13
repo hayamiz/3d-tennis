@@ -985,8 +985,12 @@ export class UI {
     // ヘッダ
     panel.appendChild(el('div', 'tuning-panel-header', 'DEBUG TUNING'))
 
+    // 構築時(=デフォルト値)を記録。あとで「変更点のみ」を抽出するのに使う。
+    const defaults = new Map<string, number>()
+
     // TUNABLES の各エントリについてスライダー行を生成
     for (const t of TUNABLES) {
+      defaults.set(t.key, t.get())
       const row = el('div', 'tuning-row')
 
       // ツールチップ(CSS :hover で表示)
@@ -1024,6 +1028,44 @@ export class UI {
 
       panel.appendChild(row)
     }
+
+    // --- フッタ: デフォルトから変更した値だけを JSON でコピー ---
+    const footer = el('div', 'tuning-footer')
+    const copyBtn = el('button', 'tuning-copy-btn', '変更点をコピー')
+    const feedback = el('span', 'tuning-copy-feedback', '')
+    copyBtn.addEventListener('click', () => {
+      // デフォルトと異なるものだけを { key: value } に集約
+      const changed: Record<string, number> = {}
+      for (const t of TUNABLES) {
+        const cur = t.get()
+        const def = defaults.get(t.key) ?? cur
+        if (Math.abs(cur - def) > 1e-9) {
+          changed[t.key] = Math.round(cur * 1000) / 1000
+        }
+      }
+      const json = JSON.stringify(changed, null, 2)
+      const count = Object.keys(changed).length
+      // 取得しやすいよう常にコンソールにも出す
+      // eslint-disable-next-line no-console
+      console.log('[tuning] changed from default:\n' + json)
+      const done = (msg: string) => {
+        feedback.textContent = msg
+        window.setTimeout(() => { feedback.textContent = '' }, 2000)
+      }
+      if (count === 0) {
+        done('変更なし')
+        return
+      }
+      const clip = navigator.clipboard
+      if (clip && clip.writeText) {
+        clip.writeText(json).then(() => done(`コピー(${count})`)).catch(() => done('コンソール出力'))
+      } else {
+        done('コンソール出力')
+      }
+    })
+    footer.appendChild(copyBtn)
+    footer.appendChild(feedback)
+    panel.appendChild(footer)
 
     return panel
   }
