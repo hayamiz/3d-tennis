@@ -22,6 +22,7 @@ import {
   PLAYER_PERSONAS,
   PERSONA_ORDER,
   MOMENTUM_FULL_STREAK,
+  TUNABLES,
 } from '../constants'
 
 // ---------------------------------------------------------------------------
@@ -362,6 +363,16 @@ export class UI {
   /** [Copy JSON] ボタン */
   private readonly debugCopyBtn: HTMLButtonElement
 
+  // -------------------------------------------------------------------------
+  // デバッグ調整パネル関連フィールド
+  // -------------------------------------------------------------------------
+
+  /** デバッグモード表示中かどうか(機能1・機能2で共用するフラグ) */
+  private debugVisible: boolean = false
+
+  /** 調整パネル全体のコンテナ(左側固定) */
+  private readonly tuningPanel: HTMLElement
+
   /** ライブログの内部バッファ(最大200行) */
   private readonly debugLines: string[] = []
   /** 直近1ポイント分のJSON文字列 */
@@ -453,6 +464,10 @@ export class UI {
     this.debugShowJsonBtn = debugRefs.showJsonBtn
     this.debugCopyBtn    = debugRefs.copyBtn
     root.appendChild(this.debugOverlay)
+
+    // デバッグ調整パネルを構築して root に追加(初期は非表示)
+    this.tuningPanel = this.buildTuningPanel()
+    root.appendChild(this.tuningPanel)
   }
 
   // -------------------------------------------------------------------------
@@ -553,8 +568,21 @@ export class UI {
       c.playerStaminaPct = psPct
     }
 
-    // 相手ゲージは表示しない(IMPROVEMENTS §5.1: 自分のみ控えめに表示)
-    this.staminaRingOpponent.classList.add('hidden')
+    // 相手ゲージ: デバッグモード表示中かつ座標が取得できるときのみ表示する
+    // (機能1: デバッグ時だけ相手スタミナを可視化)
+    const osPct = view.opponentStaminaPct
+    const osScreen = view.opponentStaminaScreen
+    if (this.debugVisible && osScreen) {
+      this.staminaRingOpponent.classList.remove('hidden')
+      this.staminaRingOpponent.style.left = `${osScreen.x}px`
+      this.staminaRingOpponent.style.top = `${osScreen.y}px`
+    } else {
+      this.staminaRingOpponent.classList.add('hidden')
+    }
+    if (osPct !== this.cache.opponentStaminaPct) {
+      this.updateStaminaRingArc(this.staminaRingOpponentArc, this.staminaRingOpponentLabel, osPct)
+      this.cache.opponentStaminaPct = osPct
+    }
 
     // --- サーブメーター ---
     if (serveMeter.active !== c.serveMeterActive) {
@@ -812,11 +840,15 @@ export class UI {
   // -------------------------------------------------------------------------
 
   /**
-   * デバッグオーバーレイ(ライブログ窓 + メニュー)の表示/非表示を切り替える。
+   * デバッグオーバーレイ(ライブログ窓 + メニュー)と調整パネルの表示/非表示を切り替える。
    * main.ts が `D` キー等でトグルする想定。showMenu/showHud では変化しない(独立)。
+   * 機能1(相手スタミナリング表示)・機能2(調整パネル)の両方を同じフラグで制御する。
    */
   setDebugVisible(on: boolean): void {
+    this.debugVisible = on
     this.debugOverlay.classList.toggle('visible', on)
+    // 調整パネルの表示/非表示を切り替える
+    this.tuningPanel.classList.toggle('hidden', !on)
     // 表示したときに最新ログを反映する
     if (on) {
       this.renderDebugLog()
@@ -936,6 +968,64 @@ export class UI {
     overlay.appendChild(menu)
 
     return { overlay, logEl, header, jsonPre, showJsonBtn, copyBtn }
+  }
+
+  // -------------------------------------------------------------------------
+  // デバッグ調整パネル構築(機能2)
+  // -------------------------------------------------------------------------
+
+  /**
+   * TUNABLES を元にスライダー群のパネルを構築して返す。
+   * root には append しない — constructor で行う。
+   * パネルは画面左側に固定。setDebugVisible で表示/非表示を切り替える。
+   */
+  private buildTuningPanel(): HTMLElement {
+    const panel = el('div', 'tuning-panel hidden')
+
+    // ヘッダ
+    panel.appendChild(el('div', 'tuning-panel-header', 'DEBUG TUNING'))
+
+    // TUNABLES の各エントリについてスライダー行を生成
+    for (const t of TUNABLES) {
+      const row = el('div', 'tuning-row')
+
+      // ツールチップ(CSS :hover で表示)
+      const tip = el('div', 'tuning-tip', t.desc)
+      row.appendChild(tip)
+
+      // ラベル
+      const labelEl = el('span', 'tuning-label', t.label)
+      row.appendChild(labelEl)
+
+      // 現在値の桁数: step が 1 未満なら小数あり
+      const decimals = t.step < 0.1 ? 2 : t.step < 1 ? 1 : 0
+
+      // 現在値表示
+      const valEl = el('span', 'tuning-val', t.get().toFixed(decimals))
+
+      // スライダー
+      const slider = document.createElement('input')
+      slider.type = 'range'
+      slider.className = 'tuning-slider'
+      slider.min = String(t.min)
+      slider.max = String(t.max)
+      slider.step = String(t.step)
+      slider.value = String(t.get())
+
+      // input イベントでライブ反映
+      slider.addEventListener('input', () => {
+        const v = parseFloat(slider.value)
+        t.set(v)
+        valEl.textContent = v.toFixed(decimals)
+      })
+
+      row.appendChild(slider)
+      row.appendChild(valEl)
+
+      panel.appendChild(row)
+    }
+
+    return panel
   }
 
   // -------------------------------------------------------------------------

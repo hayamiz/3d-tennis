@@ -1105,6 +1105,148 @@ canvas#game-canvas {
 }
 
 /* ===========================================================================
+ * デバッグ調整パネル(左側固定。setDebugVisible で表示/非表示)— 機能2
+ * ========================================================================= */
+
+/* パネル全体: 画面左中央〜上に固定 */
+.tuning-panel {
+  position: absolute;
+  top: 8%;
+  left: 8px;
+  z-index: 100;
+  width: 240px;
+  max-height: 80vh;
+  overflow-y: auto;
+  /* スクロールバーを細く */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  background: rgba(10, 14, 22, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 7px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  /* スライダー操作のため pointer-events は有効 */
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+}
+
+/* ヘッダ */
+.tuning-panel-header {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #7a9ab8;
+  padding-bottom: 5px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  text-align: center;
+}
+
+/* 1スライダー行: ラベル・スライダー・値を横並びに */
+.tuning-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border-radius: 4px;
+  transition: background 0.12s;
+}
+
+.tuning-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ラベル */
+.tuning-label {
+  font-size: 11px;
+  color: #b0c0d0;
+  white-space: nowrap;
+  min-width: 68px;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+/* スライダー本体 */
+.tuning-slider {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  /* range スライダーをコンパクトにリセット */
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.tuning-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7ab040;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.12s;
+}
+
+.tuning-slider:hover::-webkit-slider-thumb {
+  background: #9fd040;
+  transform: scale(1.2);
+}
+
+.tuning-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7ab040;
+  border: none;
+  cursor: pointer;
+}
+
+/* 現在値 */
+.tuning-val {
+  font-family: 'Fira Mono', 'Consolas', 'Courier New', monospace;
+  font-size: 11px;
+  color: #a8d060;
+  min-width: 30px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ツールチップ: .tuning-row:hover で .tuning-tip を表示 */
+.tuning-tip {
+  display: none;
+  position: absolute;
+  /* 行の上側に出す */
+  bottom: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: rgba(10, 18, 30, 0.96);
+  border: 1px solid rgba(100, 180, 100, 0.35);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #c0d8b0;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+}
+
+/* ホバーでツールチップを表示 */
+.tuning-row:hover .tuning-tip {
+  display: block;
+}
+
+/* ===========================================================================
  * モメンタムインジケータ(スコアボード内 / HUD)— IMPROVEMENTS §4 高
  * momentum > 0(連続得点中)のときのみ表示。
  * ========================================================================= */

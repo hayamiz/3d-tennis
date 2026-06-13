@@ -90,7 +90,7 @@ export const CHARGE_MAX = 1.25
 export const CHARGE_MOVE_FACTOR = 0.45
 /** 速度係数 = CHARGE_POWER_MIN + CHARGE_POWER_GAIN * min(charge, 1) */
 export const CHARGE_POWER_MIN = 0.85
-export const CHARGE_POWER_GAIN = 0.4
+export let CHARGE_POWER_GAIN = 0.4 // 体感調整可(TUNABLES)
 /** オーバーチャージの狙い誤差加算: (charge-1)^+ * OVERCHARGE_NOISE (m) */
 export const OVERCHARGE_NOISE = 2.8
 /** オーバーチャージのネット越えマージン縮小率: netMargin *= 1 - SHRINK*(charge-1)/(CHARGE_MAX-1) */
@@ -242,18 +242,21 @@ export const MOVE_Z_MIN = 0.4
 export const MOVE_Z_MAX = 15.5
 
 // スタミナ
+// 注: 体感調整用に一部を `let`(ES module ライブバインディング)にしている。
+// デバッグの調整メニュー(§17 / TUNABLES)が実行時に再代入すると、各モジュールの
+// 参照(updateStamina 等は毎フレーム読む)にそのまま反映される。
 export const STAMINA_MAX = 100
-export const STAMINA_POINT_RECOVERY = 32 // ポイント間(やや控えめ=長丁場で蓄積疲労)
-export const STAMINA_LOW_THRESHOLD = 30 // これ未満で品質低下開始
-export const STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
+export let STAMINA_POINT_RECOVERY = 32 // ポイント間(やや控えめ=長丁場で蓄積疲労)
+export let STAMINA_LOW_THRESHOLD = 30 // これ未満で品質低下開始
+export let STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
 
 // 連続消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2)
 // dStamina/dt = +REGEN_IDLE − MOVE_DRAIN_K·speed − SPRINT_EXTRA·[sprinting]
 // (移動・スプリント消費に mods.staminaDrainMul、基礎回復に mods.staminaRegenMul を乗算)
 // 通常ラリーでも徐々に減るよう、基礎回復を抑え移動消費を上げた(100 張り付き対策)。
-export const STAMINA_REGEN_IDLE = 5 // /s 常時の基礎回復(速度0で全量)
-export const STAMINA_MOVE_DRAIN_K = 1.55 // /s あたり(m/s)。drain = K·speed
-export const STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
+export let STAMINA_REGEN_IDLE = 5 // /s 常時の基礎回復(速度0で全量)
+export let STAMINA_MOVE_DRAIN_K = 1.55 // /s あたり(m/s)。drain = K·speed
+export let STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
 
 // 強いショットの打球時消費(インパクト時に1回。IMPROVEMENTS §5.3)
 export const SHOT_STAMINA_BASE: Record<ShotType, number> = {
@@ -459,3 +462,57 @@ export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
   reachMul: 1, staminaMaxMul: 1, staminaDrainMul: 1, staminaRegenMul: 1,
   touchNoiseMul: 1, returnTouchMul: 1, clutchRecoveryMul: 1, pressureDrainMul: 1,
 }
+
+// ---------------------------------------------------------------------------
+// デバッグ調整メニュー用のチューナブル(docs/ARCHITECTURE.md §17)
+// 体感に影響するパラメータをスライダーで実行時調整する。set() はこのモジュール内で
+// `let` を再代入するため、各モジュールの参照(毎フレーム読む箇所)に即反映される。
+// ---------------------------------------------------------------------------
+export interface Tunable {
+  key: string
+  label: string // スライダー名(短い)
+  desc: string // ホバー時の説明
+  min: number
+  max: number
+  step: number
+  get(): number
+  set(v: number): void
+}
+
+export const TUNABLES: Tunable[] = [
+  {
+    key: 'staminaMoveDrainK', label: '移動消費', min: 0, max: 4, step: 0.05,
+    desc: '移動の速さに比例して減るスタミナ /s(m/s あたり)。上げると走り回るだけで消耗する。',
+    get: () => STAMINA_MOVE_DRAIN_K, set: (v) => { STAMINA_MOVE_DRAIN_K = v },
+  },
+  {
+    key: 'staminaRegenIdle', label: '基礎回復', min: 0, max: 15, step: 0.5,
+    desc: '常時の基礎回復 /s(静止で全量)。下げると回復が追いつかず枯れやすい。',
+    get: () => STAMINA_REGEN_IDLE, set: (v) => { STAMINA_REGEN_IDLE = v },
+  },
+  {
+    key: 'staminaSprintExtra', label: 'スプリント消費', min: 0, max: 30, step: 1,
+    desc: 'スプリント中の追加消費 /s。上げると全力疾走の代償が大きくなる。',
+    get: () => STAMINA_SPRINT_EXTRA, set: (v) => { STAMINA_SPRINT_EXTRA = v },
+  },
+  {
+    key: 'staminaLowThreshold', label: '品質低下しきい値', min: 0, max: 80, step: 1,
+    desc: 'この残量(%)未満でショット品質が落ち始める。上げると早めにバテの影響が出る。',
+    get: () => STAMINA_LOW_THRESHOLD, set: (v) => { STAMINA_LOW_THRESHOLD = v },
+  },
+  {
+    key: 'staminaQualityFloor', label: '枯渇時の品質', min: 0.2, max: 1, step: 0.02,
+    desc: 'スタミナ0%でのショット品質係数。下げるとバテたときの精度低下が激しくなる。',
+    get: () => STAMINA_QUALITY_FLOOR, set: (v) => { STAMINA_QUALITY_FLOOR = v },
+  },
+  {
+    key: 'staminaPointRecovery', label: 'ポイント間回復', min: 0, max: 100, step: 1,
+    desc: '1ポイント終了ごとに回復する量。下げると長丁場で蓄積疲労が残る。',
+    get: () => STAMINA_POINT_RECOVERY, set: (v) => { STAMINA_POINT_RECOVERY = v },
+  },
+  {
+    key: 'chargePowerGain', label: 'チャージ威力', min: 0, max: 1, step: 0.02,
+    desc: 'フルチャージ時のショット初速ゲイン。上げると溜め打ちの威力が増す。',
+    get: () => CHARGE_POWER_GAIN, set: (v) => { CHARGE_POWER_GAIN = v },
+  },
+]

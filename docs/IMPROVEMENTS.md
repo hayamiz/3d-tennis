@@ -34,3 +34,96 @@
 - **モバイル/タッチ操作**対応。
 
 ---
+
+## 6. 他テニスゲームからの導入候補(事例調査)
+
+主要テニスゲーム(Top Spin / Virtua Tennis / Mario Tennis Aces / Full Ace / Tennis Elbow)
+の仕組みを調べ、本作の方向性(本格寄り+アーケードの軽快さ、決定論的物理、外部アセット
+なし、ペルソナ/スタミナ/モメンタム)に**取り込んで面白くなりそうな要素**を抜粋。
+出典は末尾。各案に `優先度★` と本作への接続を付記。
+
+### 6.1 スキル表現を深める(操作・タイミング)
+
+- **ショットのタイミングメーター / ジャストミート**(Top Spin 2K25)`★★★`
+  Top Spin 2K25 は全ショットにタイミングメーターを持ち、コントロール系はゲーン域で
+  タップ、パワー系はボタンを溜めてゲーン域で離す。**難しい返球(走らされ・ロブ処理)
+  ほどメーターが速くなる**。本作は既に「チャージ+体勢品質」があるので、その上に
+  **インパクト時の"ジャストミート"窓**(離すタイミングの精度ボーナス/失敗ペナルティ)を
+  重ねると、操作の上達余地と読み合いが増す。「難球ほど窓が狭い・速い」は本作の
+  **速球制御難(差し込まれ §4.6 相当)と整合**するので自然に乗る。決定論を保ったまま
+  入力タイミング依存にできる。
+- **カジュアル簡易操作モード**(Virtua Tennis 4 / Nintendo Switch Sports 系)`★★`
+  Virtua Tennis 4 はシンプル操作で初心者・カジュアル層に寄せた。本作も**ワンボタン寄りの
+  入門モード**(コースは自動アシスト、チャージ簡略)を用意すると間口が広がる。
+  既存の深い操作は「標準/上級」として残す。
+
+### 6.2 スペクタクル・派手さ(アーケード要素・モード切替前提)
+
+> 本作の本格寄りの手触りを壊さないよう、これらは**「アーケードモード」トグルの中**で
+> 有効化する想定(標準モードはシミュレーション寄りのまま)。
+
+- **エナジーゲージ + ペルソナ固有「シグネチャーショット」**(Mario Tennis Aces)`★★`
+  Aces は良いプレー(ラリー継続・トリックショット・好タイミング)でエナジーゲージが
+  溜まり、満タンで強力なスペシャルショットを撃てる(相手のラケット破壊チャンスも)。
+  本作では**ペルソナごとの必殺の一撃**(サンブラントの強烈サーブ、ニシゴオリの超アングル等)
+  に落とし込めば、§3 のペルソナ個性が一段立ち、**逆転要素**も生まれる。
+  ゲージは既存の**モメンタム**指標と統合できる。
+- **ゾーンスピード / ダイブ・スライディングリターン**(Mario Tennis Aces / Virtua Tennis)`★★`
+  届かない球へ**飛びつく一回限りのリーチ拡張**(`REACH` を瞬間的に拡大、代わりに
+  スタミナを大きく消費し直後は隙)。守備の盛り上がりが出て、**カウンター/スピード型
+  ペルソナ(ジョコヴィン/ニシゴオリ)が映える**。Aces のゾーンスピード(時間を遅くして
+  追う、エナジー消費)も同系統。本作のスタミナ経済に自然に乗る。
+- **ブロック/ラケットへの負荷**(Mario Tennis Aces)`★`
+  Aces は強烈なショットをブロックするとラケット破壊リスク。本作の**差し込まれ(mishit)
+  =弱い返球**が既に近い役割。深追いせず、強打を受け続けると返球が崩れる現行挙動の
+  **演出強化**(火花・きしみ音)程度に留めるのが無難。
+
+### 6.3 モード・進行・エンゲージメント
+
+- **スキル練習ミニゲーム + キャリア/ワールドツアー**(Virtua Tennis)`★★`
+  Virtua Tennis のワールドツアーは、試合の合間に**サーブ/ボレー/ベースライン別の
+  ミニゲーム**(的当て・風船割り・リターン壁など)でステータスを上げる。本作の
+  §4★低「トーナメント/キャリア」を具体化でき、ミニゲームは**チュートリアル兼
+  練習場**にもなる(操作習得 → ペルソナ能力の底上げ)。
+- **サーフェス(クレー/グラス/ハード)**(全シム共通)`★★`
+  §4★★「サーフェス選択」を事例が裏付け。Virtua Tennis 等は複数サーフェスを標準採用。
+  `REST`/`BOUNCE_FRICTION`/球速減衰のスケールで実装でき、**ペルソナ相性に環境変数**が
+  加わる(クレー=グラインダー有利、グラス=サーバー有利)。
+
+### 6.4 演出・没入感
+
+- **観客・歓声のモメンタム連動、ライバル/実況フレーバー**(各作)`★`
+  §4★低「観客・音響の盛り上げ」を具体化。本作の**モメンタム/プレッシャー**指標と
+  歓声・どよめきを連動させ、ブレークポイントで場が静まる→決まって沸く、等。
+  外部アセットなしの規約に沿い、歓声は WebAudio 合成で表現。
+
+### 6.5 調査で確認できた「本作が既に正しい方向にある」点
+
+- **着地ゾーン+誤差**(Tennis Elbow): 「狙うのはゾーンで、ばらつきが出るのが現実的」。
+  → 本作の**品質ノイズ(`AIM_NOISE_R`)**が同じ思想。可視化(良い体勢で**狙いゾーンが
+  締まる**様子を見せる)を足せば、初心者に戦略性が伝わりやすくなる(教育的UI)。
+- **ポジショニングとタイミングが品質を決める**(Full Ace): 本作の**距離係数・体勢品質
+  (§4.2)**と一致。方向性は本格シムと同じで、§6.1 のタイミング窓を足すと一段深くなる。
+
+### 6.6 おすすめ着手順(費用対効果)
+
+1. `★★★` **ジャストミート窓**(§6.1): 既存のチャージ/品質に薄く乗せるだけで操作の
+   奥行きが増す。本作の手触りと最も親和。
+2. `★★` **サーフェス**(§6.3)/ **ダイブリターン**(§6.2): 戦略・興奮を低〜中コストで追加。
+3. `★★` **キャリア+練習ミニゲーム**(§6.3): エンゲージメントとオンボーディングを底上げ。
+4. `★★`(アーケードモード)**エナジーゲージ+シグネチャーショット**(§6.2): 派手さ・逆転。
+   モード分離で本格モードの純度を保つ。
+
+### 出典
+
+- [12 Best Tennis Games of All Time — Cultured Vultures](https://culturedvultures.com/best-tennis-games/)
+- [TopSpin 2K25 Gameplay, Physics, Mechanics — Operation Sports](https://www.operationsports.com/topspin-2k25-gameplay-venues-tournaments-physics-mechanics-and-more/)
+- [Centre Court Report: Gameplay — TopSpin 2K25 公式](https://topspin.2k.com/2k25/centre-court-report/gameplay/)
+- [Zone Shot — Super Mario Wiki](https://www.mariowiki.com/Zone_Shot)
+- [How to Trick Shot in Mario Tennis Aces — Shacknews](https://www.shacknews.com/article/105747/how-to-trick-shot-in-mario-tennis-aces)
+- [Mario Tennis Aces Character Types — Nintendo Insider](https://www.nintendo-insider.com/mario-tennis-aces-character-types-explaining-the-different-classes/)
+- [Virtua Tennis: World Tour — Wikipedia](https://en.wikipedia.org/wiki/Virtua_Tennis:_World_Tour)
+- [Virtua Tennis 4 Review — The SEGA Source](https://thesegasource.wordpress.com/2011/06/26/virtua-tennis-4-review/)
+- [Full Ace Tennis Simulator Review — Operation Sports](https://www.operationsports.com/full-ace-tennis-simulator-review-serving-up-a-cross-court-winner/)
+
+---
