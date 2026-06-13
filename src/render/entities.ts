@@ -314,9 +314,9 @@ function makeRadialTexture(colorHex: number): THREE.Texture {
 // 発汗パーティクル定数(IMPROVEMENTS §5.8(B))
 // ---------------------------------------------------------------------------
 /** 発汗滴プールの最大数。高い pct のときは大半が非アクティブ */
-const SWEAT_POOL_SIZE = 24
+const SWEAT_POOL_SIZE = 48
 /** 滴1粒の最大生存時間(秒)。重力で落ちながらフェード */
-const SWEAT_DROP_LIFETIME = 0.55
+const SWEAT_DROP_LIFETIME = 0.75
 /** 重力加速度(滴にだけ効く。通常重力より少し弱く "水滴が飛ぶ" 感) */
 const SWEAT_GRAVITY = 6.5
 /** 放出時の初速(m/s)の乱数範囲。頭・肩から外側へ散らす */
@@ -541,13 +541,14 @@ export class CharacterEntity {
     // 発汗エミッタ用の共有ジオメトリ/マテリアルを1回だけ生成。
     // 小さな球体(半径 0.018m)を加算合成の半透明で水色に。
     // -------------------------------------------------------------------------
-    this.sweatGeo = new THREE.SphereGeometry(0.018, 5, 4)
+    // 視認性重視: 大きめ・明るい水色で通常合成(加算合成は明るいコート上で
+    // 飛んでしまい見えにくいため)。やや不透明にして「汗が飛ぶ」のを分かりやすく。
+    this.sweatGeo = new THREE.SphereGeometry(0.045, 8, 6)
     this.sweatMat = new THREE.MeshBasicMaterial({
-      color: 0x88ccff,
+      color: 0xdaf2ff,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.95,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
     })
 
     // 汗滴プールを事前確保(最大 SWEAT_POOL_SIZE 個)

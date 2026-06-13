@@ -1310,11 +1310,12 @@ export class UI {
     arc: SVGCircleElement
     label: HTMLElement
   } {
-    // プレイヤー: 半径 22px、相手: 17px
-    const radius = side === 'player' ? 22 : 17
-    const size = (radius + 5) * 2  // コンテナサイズ(px)
-    const cx = radius + 5
-    const cy = radius + 5
+    // 小径・太線にして「小さくはっきり」読めるようにする(ユーザー要望)。
+    const radius = side === 'player' ? 14 : 11
+    const pad = 7 // 太線がはみ出さないよう余白を確保
+    const size = (radius + pad) * 2  // コンテナサイズ(px)
+    const cx = radius + pad
+    const cy = radius + pad
     // 円周 = 2πr
     const circumference = 2 * Math.PI * radius
 
@@ -1338,7 +1339,7 @@ export class UI {
     trackCircle.setAttribute('r', String(radius))
     trackCircle.setAttribute('fill', 'none')
     trackCircle.setAttribute('stroke', side === 'player' ? 'rgba(68,136,255,0.4)' : 'rgba(255,80,80,0.4)')
-    trackCircle.setAttribute('stroke-width', side === 'player' ? '4' : '3')
+    trackCircle.setAttribute('stroke-width', side === 'player' ? '7' : '6')
     svg.appendChild(trackCircle)
 
     // --- 残量アーク(12時から時計回り。初期は満タン) ---
@@ -1348,7 +1349,7 @@ export class UI {
     arcCircle.setAttribute('r', String(radius))
     arcCircle.setAttribute('fill', 'none')
     arcCircle.setAttribute('stroke', '#6ab040')  // 初期色: 緑
-    arcCircle.setAttribute('stroke-width', side === 'player' ? '5' : '4')
+    arcCircle.setAttribute('stroke-width', side === 'player' ? '8' : '7')
     arcCircle.setAttribute('stroke-linecap', 'round')
     // 12時(上)から開始するために -90度回転
     arcCircle.setAttribute('transform', `rotate(-90 ${cx} ${cy})`)

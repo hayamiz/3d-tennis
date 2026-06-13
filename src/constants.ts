@@ -276,8 +276,8 @@ export function shotStaminaCost(type: ShotType, charge: number, isSmash: boolean
 // スタミナ可視化(IMPROVEMENTS §5.8)。pct = stamina/effStaminaMax で判定。
 export const STAMINA_GAUGE_GREEN = 0.6 // これ以上は緑(余裕)
 export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意) = LOW_THRESHOLD/MAX
-export const STAMINA_SWEAT_START = 0.45 // この割合未満で発汗開始
-export const STAMINA_SWEAT_MAX_RATE = 14 // /s(pct→0 で最大放出レート)
+export const STAMINA_SWEAT_START = 0.5 // この割合未満で発汗開始(早めに出して気づきやすく)
+export const STAMINA_SWEAT_MAX_RATE = 26 // /s(pct→0 で最大放出レート。多めに出して分かりやすく)
 
 // ---------------------------------------------------------------------------
 // モメンタム(勢い)とプレッシャー時の品質変動(IMPROVEMENTS §4 高 / GAME_DESIGN §6.2)

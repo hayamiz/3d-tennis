@@ -149,7 +149,12 @@ function momentumOf(side: Side): number {
  * プレイヤーが打つ番(相手が最後に打った)で、相手(AI)がセンターから外れているとき、
  * 相手コートの空いた側(AI の x と反対側)を返す。配球が報われる手応えの可視化。
  */
+// オープンコートの床ハイライトは装飾過剰のため無効化(ユーザー要望)。
+// 走らせ距離などの集計は別経路なので影響なし。再有効化はこのフラグを true に。
+const OPEN_COURT_ENABLED = false
+
 function computeOpenCourt(): { x: number; z: number; strength: number } | null {
+  if (!OPEN_COURT_ENABLED) return null
   if (phase !== 'rally' || !ballSim.state.inPlay) return null
   if (ballSim.state.lastHitBy !== 'opponent') return null // プレイヤーが打つ局面のみ
   const aiX = aiCtrl.view.pos.x
