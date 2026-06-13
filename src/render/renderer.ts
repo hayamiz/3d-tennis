@@ -6,7 +6,7 @@
 // =============================================================================
 import * as THREE from 'three'
 import type { SceneApi, WorldView, PersonaPhysique, PersonaAppearance, Surface } from '../types'
-import { PLAYER_PERSONAS, SURFACE_PARAMS } from '../constants'
+import { PLAYER_PERSONAS, SURFACE_PARAMS, MEET_HINT_LEAD, MEET_HINT_RING_BASE, MEET_HINT_RING_RANGE } from '../constants'
 import { buildCourt, buildSkyDome } from './court'
 import type { CourtHandles } from './court'
 import { BallEntity, CharacterEntity } from './entities'
@@ -134,6 +134,71 @@ class OpenCourtHighlight {
   }
 }
 
+// ===========================================================================
+// ミートタイミングのヒント(収束リング)— IMPROVEMENTS §6.1.1 (F)
+// プレイヤー足元に、外周の「収束リング」が接触予定に向けて縮み、内側の「基準リング」
+// (= ジャスト窓に相当するサイズ)に重なったらタップ、というタイミングリティクル。
+// 窓以内(eta ≤ window)では金色+脈動で「今!」を示す。
+// ===========================================================================
+const MH_Y = 0.02
+const MH_COLOR_NORMAL = 0x8fdcff // シアン(まだ早い)
+const MH_COLOR_NOW = 0xffcf6a // 金(窓内=タップ)
+
+class MeetHintRing {
+  private readonly closing: THREE.Mesh // 収束していく外周リング
+  private readonly target: THREE.Mesh // 基準リング(固定サイズ)
+  private pulse = 0
+
+  constructor(scene: THREE.Scene) {
+    // 半径1の細いリングを作り、scale で実半径にする
+    const geo = new THREE.RingGeometry(0.9, 1.0, 36)
+    const mk = (color: number, opacity: number) =>
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
+    this.target = new THREE.Mesh(geo, mk(MH_COLOR_NORMAL, 0.35))
+    this.closing = new THREE.Mesh(geo, mk(MH_COLOR_NORMAL, 0.9))
+    for (const m of [this.target, this.closing]) {
+      m.rotation.x = -Math.PI / 2
+      m.position.y = MH_Y
+      m.visible = false
+      m.renderOrder = 11
+      scene.add(m)
+    }
+  }
+
+  update(dt: number, hint: { eta: number; x: number; z: number; sweet: boolean } | null): void {
+    if (!hint) {
+      this.target.visible = false
+      this.closing.visible = false
+      return
+    }
+    this.pulse += dt * 16
+    const etaN = Math.max(0, Math.min(1, hint.eta / MEET_HINT_LEAD))
+    // 収束リング半径: eta=lead で BASE+RANGE、eta=0(=打てる)で BASE
+    const closeR = MEET_HINT_RING_BASE + MEET_HINT_RING_RANGE * etaN
+    // スイートゾーンにいる=「今リリースで just」: 金色+脈動。それ以外はシアンで収束。
+    const sweet = hint.sweet
+    const color = sweet ? MH_COLOR_NOW : MH_COLOR_NORMAL
+    const blink = 0.5 + 0.5 * Math.sin(this.pulse)
+
+    this.target.position.set(hint.x, MH_Y, hint.z)
+    this.target.scale.setScalar(MEET_HINT_RING_BASE)
+    ;(this.target.material as THREE.MeshBasicMaterial).color.setHex(color)
+    ;(this.target.material as THREE.MeshBasicMaterial).opacity = sweet ? 0.4 + 0.4 * blink : 0.32
+    this.target.visible = true
+
+    this.closing.position.set(hint.x, MH_Y + 0.001, hint.z)
+    this.closing.scale.setScalar(closeR)
+    ;(this.closing.material as THREE.MeshBasicMaterial).color.setHex(color)
+    ;(this.closing.material as THREE.MeshBasicMaterial).opacity = sweet ? 0.5 + 0.5 * blink : 0.85
+    this.closing.visible = true
+  }
+
+  dispose(scene: THREE.Scene): void {
+    scene.remove(this.target)
+    scene.remove(this.closing)
+  }
+}
+
 /** オープンコートグロー用の放射グラデーションテクスチャを生成する(1度だけ呼ぶ) */
 function makeOpenCourtGlowTexture(): THREE.Texture {
   const size = 128
@@ -181,6 +246,7 @@ export class GameRenderer {
 
   // オープンコート床ハイライト(IMPROVEMENTS §4 高)
   private readonly openCourtHighlight: OpenCourtHighlight
+  private readonly meetHintRing: MeetHintRing
 
   // サーフェス色変更用コートハンドル(setSurface から参照)
   private readonly courtHandles: CourtHandles
@@ -267,6 +333,7 @@ export class GameRenderer {
     // オープンコート床ハイライト(IMPROVEMENTS §4 高)
     // -------------------------------------------------------------------------
     this.openCourtHighlight = new OpenCourtHighlight(this.scene)
+    this.meetHintRing = new MeetHintRing(this.scene)
   }
 
   // ---------------------------------------------------------------------------
@@ -369,6 +436,9 @@ export class GameRenderer {
     // オープンコート床ハイライト更新(IMPROVEMENTS §4 高)
     // WorldView.openCourt が non-null のとき指定位置に光る床グローを表示する。
     this.openCourtHighlight.update(dt, world.openCourt)
+
+    // ミートタイミングのヒント(収束リング)更新(§6.1.1 F)
+    this.meetHintRing.update(dt, world.meetHint)
 
     // エフェクト更新
     this.effects.update(dt)

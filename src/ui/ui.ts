@@ -12,6 +12,8 @@ import type {
   ServeType,
   PersonaId,
   Surface,
+  PracticeBall,
+  PracticeCourse,
 } from '../types'
 import {
   SERVE_SWEET_MIN,
@@ -302,6 +304,12 @@ export class UI {
   private selectedGamesToWin: 1 | 2 | 4 = 2
   /** 選択中のサーフェス(デフォルト: ハード) */
   private selectedSurface: Surface = 'hard'
+  /** 選択中のゲームモード(デフォルト: マッチ) */
+  private selectedMode: 'match' | 'practice' = 'match'
+  /** 練習モードのボール種類(デフォルト: トップスピン) */
+  private selectedPracticeBall: PracticeBall = 'topspin'
+  /** 練習モードのコース(デフォルト: コート後方) */
+  private selectedPracticeCourse: PracticeCourse = 'back'
 
   // HUD 要素(差分更新のためにキャッシュ)
   private readonly hudPointPlayer: HTMLElement
@@ -329,6 +337,14 @@ export class UI {
   private readonly hudMiOpponent: HTMLElement
   /** モメンタムインジケータのコンテナ要素 */
   private readonly hudMomentumBar: HTMLElement
+  /** 練習モード成績パネルのコンテナ */
+  private readonly hudPracticeStats: HTMLElement
+  /** 練習成績: ジャスト回数 */
+  private readonly hudPracticeJust: HTMLElement
+  /** 練習成績: 通常打球回数 */
+  private readonly hudPracticeNonJust: HTMLElement
+  /** 練習成績: セーフティ回数 */
+  private readonly hudPracticeSafety: HTMLElement
 
   // -------------------------------------------------------------------------
   // 円形スタミナゲージ(キャラ頭上追従)
@@ -438,6 +454,10 @@ export class UI {
     this.hudMiDiff = hudRefs.miDiff
     this.hudMiOpponent = hudRefs.miOpponent
     this.hudMomentumBar = hudRefs.momentumBar
+    this.hudPracticeStats = hudRefs.practiceStats
+    this.hudPracticeJust = hudRefs.practiceJust
+    this.hudPracticeNonJust = hudRefs.practiceNonJust
+    this.hudPracticeSafety = hudRefs.practiceSafety
 
     // ポーズ画面を構築
     this.pauseScreen = this.buildPauseScreen()
@@ -685,6 +705,18 @@ export class UI {
     if (momentum !== c.playerMomentum) {
       this.updateMomentumBar(this.hudMomentumBar, momentum)
       c.playerMomentum = momentum
+    }
+
+    // --- 練習モード成績パネル ---
+    if (view.practiceStats === null) {
+      // 通常対戦: パネルを非表示
+      this.hudPracticeStats.classList.add('hidden')
+    } else {
+      // 練習モード: パネルを表示して数値を更新する
+      this.hudPracticeStats.classList.remove('hidden')
+      this.hudPracticeJust.textContent = String(view.practiceStats.just)
+      this.hudPracticeNonJust.textContent = String(view.practiceStats.nonJust)
+      this.hudPracticeSafety.textContent = String(view.practiceStats.safety)
     }
   }
 
@@ -1138,6 +1170,80 @@ export class UI {
 
     const options = el('div', 'menu-options')
 
+    // --- モード選択(Match / Practice) ---
+    const modeGroup = el('div', 'option-group')
+    modeGroup.appendChild(el('div', 'option-label', 'Mode'))
+    const modeButtons = el('div', 'option-buttons')
+    const modeDefs: Array<{ value: 'match' | 'practice'; label: string }> = [
+      { value: 'match', label: 'Match' },
+      { value: 'practice', label: 'Practice' },
+    ]
+    const modeBtnMap = new Map<'match' | 'practice', HTMLButtonElement>()
+
+    // Practice 限定グループ(Ball・Course)。初期は非表示
+    const practiceBallGroup = el('div', 'option-group hidden')
+    practiceBallGroup.appendChild(el('div', 'option-label', 'Ball'))
+    const ballButtons = el('div', 'option-buttons')
+    const ballDefs: Array<{ value: PracticeBall; label: string }> = [
+      { value: 'flat', label: 'フラット' },
+      { value: 'topspin', label: 'トップスピン' },
+      { value: 'slice', label: 'スライス' },
+      { value: 'lob', label: 'ロブ' },
+      { value: 'random', label: 'ランダム' },
+    ]
+    const ballBtnMap = new Map<PracticeBall, HTMLButtonElement>()
+    ballDefs.forEach(({ value, label }) => {
+      const btn = el('button',
+        `opt-btn${value === this.selectedPracticeBall ? ' selected' : ''}`, label)
+      btn.addEventListener('click', () => {
+        this.selectedPracticeBall = value
+        ballBtnMap.forEach((b, k) => b.classList.toggle('selected', k === value))
+      })
+      ballBtnMap.set(value, btn)
+      ballButtons.appendChild(btn)
+    })
+    practiceBallGroup.appendChild(ballButtons)
+
+    const practiceCourseGroup = el('div', 'option-group hidden')
+    practiceCourseGroup.appendChild(el('div', 'option-label', 'Course'))
+    const courseButtons = el('div', 'option-buttons')
+    const courseDefs: Array<{ value: PracticeCourse; label: string }> = [
+      { value: 'front', label: 'コート前' },
+      { value: 'back', label: 'コート後' },
+      { value: 'random', label: 'ランダム' },
+    ]
+    const courseBtnMap = new Map<PracticeCourse, HTMLButtonElement>()
+    courseDefs.forEach(({ value, label }) => {
+      const btn = el('button',
+        `opt-btn${value === this.selectedPracticeCourse ? ' selected' : ''}`, label)
+      btn.addEventListener('click', () => {
+        this.selectedPracticeCourse = value
+        courseBtnMap.forEach((b, k) => b.classList.toggle('selected', k === value))
+      })
+      courseBtnMap.set(value, btn)
+      courseButtons.appendChild(btn)
+    })
+    practiceCourseGroup.appendChild(courseButtons)
+
+    modeDefs.forEach(({ value, label }) => {
+      const btn = el('button',
+        `opt-btn${value === this.selectedMode ? ' selected' : ''}`, label)
+      btn.addEventListener('click', () => {
+        this.selectedMode = value
+        modeBtnMap.forEach((b, k) => b.classList.toggle('selected', k === value))
+        // Practice 選択時のみ Ball・Course グループを表示する
+        const isPractice = value === 'practice'
+        practiceBallGroup.classList.toggle('hidden', !isPractice)
+        practiceCourseGroup.classList.toggle('hidden', !isPractice)
+      })
+      modeBtnMap.set(value, btn)
+      modeButtons.appendChild(btn)
+    })
+    modeGroup.appendChild(modeButtons)
+    options.appendChild(modeGroup)
+    options.appendChild(practiceBallGroup)
+    options.appendChild(practiceCourseGroup)
+
     // 難易度選択
     const diffGroup = el('div', 'option-group')
     diffGroup.appendChild(el('div', 'option-label', 'Difficulty'))
@@ -1245,6 +1351,12 @@ export class UI {
         playerPersona: playerPickerResult.getPersonaId(),
         opponentPersona: opponentPickerResult.getPersonaId(),
         surface: this.selectedSurface,
+        mode: this.selectedMode,
+        // practice モードのときのみ練習設定を付加する
+        ...(this.selectedMode === 'practice' ? {
+          practiceBall: this.selectedPracticeBall,
+          practiceCourse: this.selectedPracticeCourse,
+        } : {}),
       }
       this.handlers.onStart(config)
     })
@@ -1294,6 +1406,14 @@ export class UI {
     miOpponent: HTMLElement
     /** モメンタムインジケータのコンテナ */
     momentumBar: HTMLElement
+    /** 練習モード成績パネルのコンテナ */
+    practiceStats: HTMLElement
+    /** 練習成績: ジャスト回数 */
+    practiceJust: HTMLElement
+    /** 練習成績: 通常打球回数 */
+    practiceNonJust: HTMLElement
+    /** 練習成績: セーフティ回数 */
+    practiceSafety: HTMLElement
   } {
     // --- スコアボード ---
     const scoreboard = el('div', 'hud-scoreboard')
@@ -1413,6 +1533,29 @@ export class UI {
     chargeBar.appendChild(chargeBarOuter)
     container.appendChild(chargeBar)
 
+    // --- 練習モード成績パネル(左上に固定。通常対戦では hidden) ---
+    const practiceStats = el('div', 'practice-stats hidden')
+    practiceStats.appendChild(el('div', 'practice-stats-title', '練習成績'))
+    // ジャスト行
+    const practiceJustRow = el('div', 'practice-stats-row practice-stats-just')
+    practiceJustRow.appendChild(el('span', 'practice-stats-label', 'ジャスト'))
+    const practiceJust = el('span', 'practice-stats-value', '0')
+    practiceJustRow.appendChild(practiceJust)
+    practiceStats.appendChild(practiceJustRow)
+    // 通常打球行
+    const practiceNonJustRow = el('div', 'practice-stats-row')
+    practiceNonJustRow.appendChild(el('span', 'practice-stats-label', '通常'))
+    const practiceNonJust = el('span', 'practice-stats-value', '0')
+    practiceNonJustRow.appendChild(practiceNonJust)
+    practiceStats.appendChild(practiceNonJustRow)
+    // セーフティ行
+    const practiceSafetyRow = el('div', 'practice-stats-row')
+    practiceSafetyRow.appendChild(el('span', 'practice-stats-label', 'セーフティ'))
+    const practiceSafety = el('span', 'practice-stats-value', '0')
+    practiceSafetyRow.appendChild(practiceSafety)
+    practiceStats.appendChild(practiceSafetyRow)
+    container.appendChild(practiceStats)
+
     // --- 操作説明パネル(右端常時表示) ---
     const keysPanel = el('div', 'hud-keys-panel')
     keysPanel.appendChild(el('div', 'keys-panel-title', 'Controls'))
@@ -1424,7 +1567,7 @@ export class UI {
       ['L', 'スライス'],
       ['U', 'ロブ'],
       ['I', 'ドロップ'],
-      ['長押し', 'チャージ'],
+      ['長押し→離す', 'チャージ&打球(芯で離すとジャスト)'],
       ['移動+ショット', 'コース指定'],
       ['Space', 'サーブ'],
       ['J/K/L(サーブ)', 'フラット/キック/スライス'],
@@ -1462,6 +1605,10 @@ export class UI {
       miDiff,
       miOpponent,
       momentumBar,
+      practiceStats,
+      practiceJust,
+      practiceNonJust,
+      practiceSafety,
     }
   }
 

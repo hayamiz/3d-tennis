@@ -178,4 +178,45 @@ export class BallSim {
     }
     return null
   }
+
+  /**
+   * 指定座標(px,pz)を中心とする半径 reach の水平円内、かつ高さ reachHeight 以下に
+   * ボールが初めて入る時刻と位置を前方シミュレートで求める(ジャストミートのヒント用)。
+   * ネットに先に衝突した場合や maxTime 内に入らない場合は null。
+   * 本シミュレーションは汚さない(状態を複製してステップする)。
+   */
+  predictReach(
+    px: number,
+    pz: number,
+    reach: number,
+    reachHeight: number,
+    maxTime = 1.2,
+  ): { pos: Vector3; time: number } | null {
+    if (!this.state.inPlay) return null
+    const sim: BallState = {
+      pos: this.state.pos.clone(),
+      vel: this.state.vel.clone(),
+      spin: this.state.spin.clone(),
+      bounceCount: this.state.bounceCount,
+      lastHitBy: this.state.lastHitBy,
+      inPlay: true,
+    }
+    const dt = 1 / 120
+    let t = 0
+    const ev: BallEvent[] = []
+    while (t < maxTime) {
+      ev.length = 0
+      integrate(sim, dt, ev)
+      t += dt
+      for (const e of ev) {
+        if (e.kind === 'net') return null
+      }
+      const dx = sim.pos.x - px
+      const dz = sim.pos.z - pz
+      if (Math.hypot(dx, dz) <= reach && sim.pos.y <= reachHeight) {
+        return { pos: sim.pos.clone(), time: t }
+      }
+    }
+    return null
+  }
 }

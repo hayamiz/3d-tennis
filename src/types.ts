@@ -195,6 +195,11 @@ export interface ShotRequest {
    * 控えめなボーナスを与える。省略/false で通常打球(ペナルティなし)。演出にも使う。
    */
   just?: boolean
+  /**
+   * セーフティ打球フラグ(§4.4)。リリースせずにボールがリーチを抜ける直前に受動的に
+   * 打たれた打球。練習モードのカウント表示で「セーフティ発動」を数えるのに使う。
+   */
+  safety?: boolean
 }
 
 export interface ShotSolution {
@@ -375,6 +380,11 @@ export interface ScoreView {
 // マッチ設定・スタッツ
 // ---------------------------------------------------------------------------
 
+/** 練習モードのボール種類(マシンが打ち出す球。'random' は毎回ランダム) */
+export type PracticeBall = 'flat' | 'topspin' | 'slice' | 'lob' | 'random'
+/** 練習モードのコース(プレイヤーコートのどこに来るか) */
+export type PracticeCourse = 'front' | 'back' | 'random'
+
 export interface MatchConfig {
   difficulty: Difficulty
   gamesToWin: 1 | 2 | 4
@@ -384,6 +394,12 @@ export interface MatchConfig {
   opponentPersona: PersonaId
   /** コートサーフェス(docs/GAME_DESIGN.md §13) */
   surface: Surface
+  /** モード。'match'=通常対戦 / 'practice'=練習(マシンが球出し)。省略時は 'match' */
+  mode?: 'match' | 'practice'
+  /** 練習モードのボール種類(mode='practice' のとき有効) */
+  practiceBall?: PracticeBall
+  /** 練習モードのコース(mode='practice' のとき有効) */
+  practiceCourse?: PracticeCourse
 }
 
 export interface MatchStats {
@@ -466,6 +482,13 @@ export interface WorldView {
    * 描画側はこの位置に光る床ハイライトを出し「ここが空いている」を可視化する。
    */
   openCourt: { x: number; z: number; strength: number } | null
+  /**
+   * ジャストミートのタイミングヒント(§6.1.1 F・リリース方式)。プレイヤーへの入射球が
+   * 打てる(リーチに入る)までの残り時間 eta(秒。リーチ内なら 0)、収束リングを描く床位置
+   * (x,z)、今スイートゾーン(芯)にあるか sweet。null なら非表示。描画側は eta→0 でリングを
+   * 基準サイズへ収束させ、sweet のとき金色+脈動で「今リリース」を示す。
+   */
+  meetHint: { eta: number; x: number; z: number; sweet: boolean } | null
 }
 
 /** main からエフェクトを発火するための API(GameRenderer が実装) */
@@ -506,6 +529,11 @@ export interface HudView {
    * null のとき(非サーブ時や投影不可)はラベルを既定位置にしない=非表示扱い。
    */
   serveLabelScreen: { x: number; y: number } | null
+  /**
+   * 練習モードの成績(§4.4.1 のジャスト練習用)。null なら非表示(通常対戦)。
+   * just=ジャストミート成功 / nonJust=ジャストでない打球 / safety=セーフティ発動 の累計回数。
+   */
+  practiceStats: { just: number; nonJust: number; safety: number } | null
 }
 
 export interface UIHandlers {

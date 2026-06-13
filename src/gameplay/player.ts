@@ -54,11 +54,8 @@ import {
   SWING_LOCK_TIME,
   SWING_LOCK_MOVE_FACTOR,
   CHARGE_RELEASE_COOLDOWN,
-  JUST_WINDOW_BASE,
-  JUST_WINDOW_MIN,
-  JUST_HARD_SPEED_LO,
-  JUST_HARD_SPEED_HI,
-  JUST_QUAL_REF,
+  JUST_SWEET_DIST,
+  SAFETY_DROP_Y,
   SERVE_X_MARGIN_CENTER,
   SERVE_Z_MIN_BEHIND,
   SERVE_Z_MAX_BEHIND,
@@ -130,9 +127,6 @@ export class PlayerController implements Controller {
   private chargeShot: ShotType | null = null // チャージ中のショット種(最初に押したキー)
   private chargeCooldown = 0 // 空チャージ後の再チャージ不可残り秒数
   private swingLockTimer = 0 // 打球後の移動ロック残り秒数
-  // ジャストミート(§6.1.1): チャージ中に「もう一度タップ」した瞬間からの経過秒。
-  // 自動打球の瞬間にこの値がジャスト窓以内ならジャスト成立。Infinity=タップなし。
-  private timeSinceJustTap = Infinity
 
   // サーブメーター
   private meterActive = false
@@ -242,7 +236,6 @@ export class PlayerController implements Controller {
     this.chargeShot = null
     this.chargeCooldown = 0
     this.swingLockTimer = 0
-    this.timeSinceJustTap = Infinity
     // サーブ種類をフラット(デフォルト)に戻す(GAME_DESIGN §5.1)
     this.serveType = 'flat'
 
@@ -386,40 +379,16 @@ export class PlayerController implements Controller {
     inp: import('../types').InputState,
     ctx: ControlContext,
   ): void {
-    // ジャスト窓のタップ経過時間を進める(§6.1.1)
-    this.timeSinceJustTap += dt
-
     // ---- チャージ状態の更新(移動より先に確定させ、移動係数に反映する) ----
     if (this.charging) {
       // チャージ量を増加(CHARGE_TIME 秒で 1.0、CHARGE_MAX まで)
       this.charge = Math.min(CHARGE_MAX, this.charge + dt / CHARGE_TIME)
-
-      // ジャストミート入力: チャージ中(=既に保持中)に新たなショットキー押下エッジが
-      // 来たら「もう一度タップ」とみなしタイマーを 0 に。保持キーは維持されるため
-      // チャージは継続し、打球種(chargeShot)も変わらない(IMPROVEMENTS §6.1.1)。
-      if (inp.shotPressed !== null) this.timeSinceJustTap = 0
-
-      // 保持キーを離した → 空チャージ。再チャージ不可時間に入る
-      // (shotReleased が「今フレーム離されたキー」、shotHeld が「まだ押下中のキー」)
-      const stillHeld = inp.shotHeld !== null
-      if (!stillHeld) {
-        this.charging = false
-        this.charge = 0
-        this.chargeShot = null
-        this.chargeCooldown = CHARGE_RELEASE_COOLDOWN
-        // 打たずに離した直後の表示(旧 whiff 硬直は廃止し、表示用に流用)
-        this.swingState = 'whiff'
-        this.swingTimer = SWING_DISPLAY_DURATION
-        this.swingSide = null
-      }
     } else {
       // 新規にショットキーを押した → チャージ開始(再チャージ不可中は不可)
       if (inp.shotPressed !== null && this.chargeCooldown <= 0) {
         this.charging = true
         this.charge = 0
         this.chargeShot = inp.shotPressed
-        // チャージ開始の押下自体はジャスト入力に数えない(窓をリセット)
-        this.timeSinceJustTap = Infinity
       }
     }
 
@@ -427,9 +396,67 @@ export class PlayerController implements Controller {
     const isSprinting = inp.sprint && this.stamina > 0
     this.applyMovement(dt, inp, isSprinting)
 
-    // ---- 保持中にボールが打球条件を満たした瞬間に自動打球 ----
+    // ---- 打球(リリースで打つ。§4.4)----
+    // チャージキーを離した瞬間にリーチ内なら打球。スイートゾーン(芯)で離すとジャスト。
+    // 離さずにいてもボールがスイートゾーンを抜けて遠ざかり出したらセーフティ打球。
     if (this.charging && this.chargeShot !== null) {
-      this.tryShot(this.chargeShot, inp, ctx, isSprinting)
+      this.resolveRelease(this.chargeShot, inp, ctx, isSprinting)
+    }
+  }
+
+  /**
+   * リリース打球・セーフティ打球・空振りの解決(§4.4 リリース方式)。
+   * - チャージキーを離した(shotHeld が null)→ リーチ内なら打球(芯なら just)、外なら空振り。
+   * - 離していない → ボールがスイートゾーンを抜けて遠ざかり出したらセーフティ打球(just なし)。
+   */
+  private resolveRelease(
+    shotType: ShotType,
+    inp: import('../types').InputState,
+    ctx: ControlContext,
+    isSprinting: boolean,
+  ): void {
+    const ball = ctx.ball
+    const dx = ball.pos.x - this.pos.x
+    const dz = ball.pos.z - this.pos.z
+    const hDist = Math.sqrt(dx * dx + dz * dz)
+    const hittable =
+      hDist <= this.effReach &&
+      ball.pos.y <= REACH_HEIGHT &&
+      ball.lastHitBy !== this.side &&
+      ball.inPlay
+
+    const released = inp.shotHeld === null // チャージキーを離した(全ショットキー非保持)
+
+    if (released) {
+      if (hittable) {
+        // 芯(スイートゾーン)で離せばジャスト。外で離すと通常打球(ペナルティなし)。
+        const just = hDist <= JUST_SWEET_DIST
+        this.executeShot(shotType, inp, ctx, isSprinting, just, hDist, 'release')
+      } else {
+        // リーチ外で離した = 空振り。再チャージ不可時間に入る。
+        this.charging = false
+        this.charge = 0
+        this.chargeShot = null
+        this.chargeCooldown = CHARGE_RELEASE_COOLDOWN
+        this.swingState = 'whiff'
+        this.swingTimer = SWING_DISPLAY_DURATION
+        this.swingSide = null
+      }
+      return
+    }
+
+    // 未リリース: セーフティ打球(リリース方式の保険)。スイートゾーンにいる間は待ち
+    // (リリースで just を狙える)、リーチを抜ける直前に受動的に打つ(ジャストなし)。
+    // 「抜ける」を2軸で判定する:
+    //   水平: 遠ざかり(receding)かつ芯の外(hDist > sweet)。横に通過する通常のラリー球用。
+    //   垂直: 下降中かつ低い(y ≤ SAFETY_DROP_Y)。真下に落ちてくる山なり/ロブ/スマッシュ用。
+    //         水平には遠ざからない(真下に落ちる)ため、これがないと空振りしていた(回帰修正)。
+    if (hittable) {
+      const recedingH = dx * ball.vel.x + dz * ball.vel.z > 0
+      const droppingLow = ball.vel.y < 0 && ball.pos.y <= SAFETY_DROP_Y
+      if (droppingLow || (recedingH && hDist > JUST_SWEET_DIST)) {
+        this.executeShot(shotType, inp, ctx, isSprinting, false, hDist, 'safety')
+      }
     }
   }
 
@@ -514,37 +541,26 @@ export class PlayerController implements Controller {
   }
 
   // ---------------------------------------------------------------------------
-  // ショット判定
+  // ショット実行
   // ---------------------------------------------------------------------------
 
   /**
-   * チャージ保持中に毎フレーム呼び、打球条件を満たした瞬間に自動打球する。
-   * 条件を満たさない場合は何もしない(チャージを継続する。空振り硬直は発生しない)。
+   * 実際に打球する(リリース打球 or セーフティ打球から呼ばれる)。
+   * 打球条件チェックや just 判定は呼び出し側(resolveRelease)で済ませている。
+   * @param just    ジャストミート成立フラグ(§6.1.1)
+   * @param hDist   打点距離(ログ用)
+   * @param trigger 'release'(離して打つ) | 'safety'(抜ける直前の受動打球)
    */
-  private tryShot(
+  private executeShot(
     shotType: ShotType,
     inp: import('../types').InputState,
     ctx: ControlContext,
     isSprinting: boolean,
+    just: boolean,
+    hDist: number,
+    trigger: 'release' | 'safety',
   ): void {
     const ball = ctx.ball
-
-    // 打球条件チェック
-    const dx = ball.pos.x - this.pos.x
-    const dz = ball.pos.z - this.pos.z
-    const hDist = Math.sqrt(dx * dx + dz * dz)
-    const ballHeight = ball.pos.y
-
-    const canHit =
-      hDist <= this.effReach &&
-      ballHeight <= REACH_HEIGHT &&
-      ball.lastHitBy !== this.side &&
-      ball.inPlay
-
-    if (!canHit) {
-      // まだ届かない: チャージを保持したまま待つ
-      return
-    }
 
     // 品質計算 (GAME_DESIGN §4.2)
     // 既存要素(距離・スタミナ・スプリント)→ モメンタム/プレッシャー → クランプ の順。
@@ -555,17 +571,28 @@ export class PlayerController implements Controller {
     q = this.applyMomentumPressure(q, ctx)
     const quality = Math.max(QUALITY_MIN, Math.min(1.0, q))
 
-    // ターゲット決定 (GAME_DESIGN §4.3)。自動打球の瞬間の移動キー状態と打点高さを使う
+    // ターゲット決定 (GAME_DESIGN §4.3)。打球の瞬間の移動キー状態と打点高さを使う
     const target = this.calcTarget(shotType, inp, ball.pos.y)
 
     // 打球直前のボール速度の大きさ(m/s)。相手球の勢いをソルバへ渡す(GAME_DESIGN §4.5)
     const incomingSpeed = Math.hypot(ball.vel.x, ball.vel.y, ball.vel.z)
 
-    // ジャストミート判定(§6.1.1): 接触の直前にタップがあり、かつ窓以内なら成立。
-    // 難球(速球・走らされ=低品質)ほど窓を狭くする。
-    const just = this.isJustMeet(incomingSpeed, quality)
+    // デバッグログ(?debug): 毎打のジャスト判定。芯距離・スイート閾値・トリガを残す。
+    ctx.logDebug?.({
+      kind: 'note',
+      msg: `just ${just ? 'OK' : '--'} hDist=${hDist.toFixed(2)} sweet=${JUST_SWEET_DIST.toFixed(2)} vIn=${incomingSpeed.toFixed(1)} q=${quality.toFixed(2)} (${trigger})`,
+      data: {
+        just,
+        trigger,
+        hDist: Math.round(hDist * 100) / 100,
+        sweetDist: JUST_SWEET_DIST,
+        incomingSpeed: Math.round(incomingSpeed * 10) / 10,
+        quality: Math.round(quality * 100) / 100,
+        shot: shotType,
+      },
+    })
 
-    // 打球要求(チャージ量・相手球速を添付。リーチ内で即打した場合は charge ≈ 0)
+    // 打球要求(チャージ量・相手球速を添付)
     ctx.requestShot({
       type: shotType,
       hitter: this.side,
@@ -577,6 +604,7 @@ export class PlayerController implements Controller {
       // 自分のペルソナ倍率を添付(ソルバが初速・狙い等に乗算)
       mods: this.mods,
       just,
+      safety: trigger === 'safety',
     })
 
     // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
@@ -603,21 +631,6 @@ export class PlayerController implements Controller {
     this.charge = 0
     this.chargeShot = null
     this.swingLockTimer = SWING_LOCK_TIME
-    // 打球で消費。次の打球へは持ち越さない(§6.1.1)
-    this.timeSinceJustTap = Infinity
-  }
-
-  /**
-   * ジャストミート成立判定(§6.1.1)。直近のタップからの経過(timeSinceJustTap)が
-   * ジャスト窓以内なら true。窓は難球(速球・低品質=走らされ)ほど狭い。
-   */
-  private isJustMeet(incomingSpeed: number, quality: number): boolean {
-    const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
-    const speedHard = clamp01((incomingSpeed - JUST_HARD_SPEED_LO) / (JUST_HARD_SPEED_HI - JUST_HARD_SPEED_LO))
-    const qualHard = clamp01((JUST_QUAL_REF - quality) / JUST_QUAL_REF)
-    const hardness = Math.max(speedHard, qualHard)
-    const window = JUST_WINDOW_BASE + (JUST_WINDOW_MIN - JUST_WINDOW_BASE) * hardness
-    return this.timeSinceJustTap <= window
   }
 
   // ---------------------------------------------------------------------------

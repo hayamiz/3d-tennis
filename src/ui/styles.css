@@ -1334,6 +1334,66 @@ canvas#game-canvas {
 }
 
 /* ===========================================================================
+ * 練習モード成績パネル(HUD 左上固定)
+ * ========================================================================= */
+
+/* パネル全体: 画面左上に半透明ボックス */
+.practice-stats {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  background: rgba(0, 0, 0, 0.60);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem 0.55rem;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  min-width: 120px;
+}
+
+/* パネルタイトル */
+.practice-stats-title {
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #6a7a8a;
+  margin-bottom: 0.35rem;
+  text-align: center;
+}
+
+/* 各行: ラベルと数値を横並びに */
+.practice-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.06rem 0;
+}
+
+/* ラベル */
+.practice-stats-label {
+  font-size: 0.78rem;
+  color: #8a9ab0;
+  letter-spacing: 0.04em;
+}
+
+/* 数値 */
+.practice-stats-value {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #c8d8e8;
+  min-width: 1.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ジャスト行: 金色で視認性アップ */
+.practice-stats-just .practice-stats-label,
+.practice-stats-just .practice-stats-value {
+  color: #ffcf6a;
+}
+
+/* ===========================================================================
  * 非表示ユーティリティ
  * ========================================================================= */
 .hidden {

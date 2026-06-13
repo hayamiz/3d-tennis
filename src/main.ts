@@ -14,6 +14,8 @@ import {
   type MatchConfig,
   type MatchStats,
   type PersonaModifiers,
+  type PracticeBall,
+  type PracticeCourse,
   type RallyVerdict,
   type ServeType,
   type ServiceBox,
@@ -28,6 +30,8 @@ import {
   BASE_HEIGHT_M,
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
+  JUST_SWEET_DIST,
+  MEET_HINT_LEAD,
   MISHIT_ACTIVE_EPS,
   MOMENTUM_FULL_STREAK,
   NET_POINT_Z,
@@ -35,6 +39,13 @@ import {
   PHYS_DT,
   PLAYER_PERSONAS,
   personaModifiers,
+  PRACTICE_COURSE_BACK_Z,
+  PRACTICE_COURSE_FRONT_Z,
+  PRACTICE_FEED_DELAY,
+  PRACTICE_MACHINE_Z,
+  PRACTICE_SPREAD_X,
+  REACH,
+  REACH_HEIGHT,
   SERVE_HIT_HEIGHT,
   SERVICE_LINE_Z,
   setSurface,
@@ -113,6 +124,12 @@ let aiCtrl: Controller
 let stats: MatchStats
 let serveNumber: 1 | 2 = 1
 let pointsInGame = 0 // サーブサイド(デュース/アド)決定用
+// 練習モード(ボールマシン)状態
+let practiceActive = false
+let practiceBall: PracticeBall = 'topspin'
+let practiceCourse: PracticeCourse = 'back'
+let practiceFeedTimer = 0 // 次の球出しまでの待ち(秒)
+let practiceStats = { just: 0, nonJust: 0, safety: 0 }
 let banner: string | null = null
 let bannerTimer = 0
 let pointOverTimer = 0
@@ -170,6 +187,35 @@ function computeOpenCourt(): { x: number; z: number; strength: number } | null {
   const openX = -Math.sign(aiX) * COURT_HALF_WIDTH * 0.62
   const openZ = -(COURT_HALF_LENGTH * 0.55)
   return { x: openX, z: openZ, strength }
+}
+
+/**
+ * ジャストミートのタイミングヒント(§6.1.1 F)を算出する。リリース方式に対応。
+ * - eta: ボールがリーチに入る(打てる)までの残り時間。前方シミュレート。リーチ内なら 0。
+ *        リード時間(MEET_HINT_LEAD)より先の接触は出さない(直前だけ表示)。
+ * - sweet: 今ボールがスイートゾーン(芯=JUST_SWEET_DIST 以内)にある=「今リリースで just」。
+ * 描画側は eta でリングを収束させ、sweet のとき金色+脈動で「今離す」を示す。
+ */
+function computeMeetHint(): { eta: number; x: number; z: number; sweet: boolean } | null {
+  if (phase !== 'rally' || !ballSim.state.inPlay) return null
+  // 自分が打った球は対象外(相手から来る球のみ)
+  if (ballSim.state.lastHitBy === 'player') return null
+  if (!playerCtrl) return null
+  const pv = playerCtrl.view
+  const reach = REACH * playerMods.reachMul
+  const bp = ballSim.state.pos
+  const hDist = Math.hypot(bp.x - pv.pos.x, bp.z - pv.pos.z)
+  const hittableNow = hDist <= reach && bp.y <= REACH_HEIGHT
+  let eta: number
+  if (hittableNow) {
+    eta = 0
+  } else {
+    const c = ballSim.predictReach(pv.pos.x, pv.pos.z, reach, REACH_HEIGHT, MEET_HINT_LEAD)
+    if (!c) return null
+    eta = c.time
+  }
+  const sweet = hittableNow && hDist <= JUST_SWEET_DIST
+  return { eta, x: pv.pos.x, z: pv.pos.z, sweet }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +385,15 @@ function handleShot(req: ShotRequest): void {
     mishit: (sol.mishit ?? 0) > MISHIT_ACTIVE_EPS,
     just: req.just ?? false,
   })
+  // 練習モード: プレイヤーの打球をカウント(セーフティ / ジャスト / 通常)。スコア判定はしない。
+  if (practiceActive) {
+    if (req.hitter === 'player') {
+      if (req.safety) practiceStats.safety++
+      else if (req.just) practiceStats.just++
+      else practiceStats.nonJust++
+    }
+    return
+  }
   judge.onEvent({ kind: 'hit', by: req.hitter, shot: req.type }, ballSim.state)
 }
 
@@ -576,12 +631,96 @@ function startMatch(cfg: MatchConfig): void {
     opponentName: opponentPersona.name,
   })
   ui.showHud()
-  startNextPoint()
+  if (cfg.mode === 'practice') {
+    practiceActive = true
+    practiceBall = cfg.practiceBall ?? 'topspin'
+    practiceCourse = cfg.practiceCourse ?? 'back'
+    practiceStats = { just: 0, nonJust: 0, safety: 0 }
+    startPractice()
+  } else {
+    practiceActive = false
+    startNextPoint()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 練習モード(ボールマシン)
+// ---------------------------------------------------------------------------
+function startPractice(): void {
+  resetPointLog()
+  pointClock = 0
+  // プレイヤーは受け手、相手(マシン)はベースラインに立たせる(モデル表示用。動かさない)
+  playerCtrl.resetForPoint('opponent', true)
+  aiCtrl.resetForPoint('opponent', true)
+  ballSim.state.inPlay = false
+  ballSim.state.bounceCount = 0
+  ballSim.state.lastHitBy = null
+  phase = 'rally' // 練習中は常にラリー扱い(プレイヤーが打てる)
+  practiceFeedTimer = 0.6 // 最初の球出しまで少し待つ
+}
+
+/** マシンが1球出す。練習設定の球種・コースに従う。 */
+function feedPracticeBall(): void {
+  const type =
+    practiceBall === 'random'
+      ? (['flat', 'topspin', 'slice', 'lob'] as const)[Math.floor(Math.random() * 4)]
+      : practiceBall
+  let z: number
+  if (practiceCourse === 'front') z = PRACTICE_COURSE_FRONT_Z
+  else if (practiceCourse === 'back') z = PRACTICE_COURSE_BACK_Z
+  else z = Math.random() < 0.5 ? PRACTICE_COURSE_FRONT_Z : PRACTICE_COURSE_BACK_Z
+  const x = (Math.random() * 2 - 1) * PRACTICE_SPREAD_X
+  const machinePos = new Vector3(0, 1.0, PRACTICE_MACHINE_Z)
+  const target = new Vector3(x, 0, z)
+  // マシンの球出し = 相手側からプレイヤーコートへの打球(solveShot を流用)
+  const sol = solveShot({
+    type,
+    hitter: 'opponent',
+    hitPos: machinePos,
+    target,
+    quality: 0.95,
+    charge: 0.3,
+    incomingSpeed: 0,
+    mods: opponentMods,
+  })
+  ballSim.launch(machinePos, sol.vel, sol.spin, 'opponent')
+  resetPointLog()
+  pointClock = 0
+  dbg(`practice feed ${type} → (${x.toFixed(1)},${z.toFixed(1)})`)
+}
+
+/** 練習モードの物理ステップ(球出し→打ち返し→決着→次の球。スコアなし)。 */
+function practiceStep(): void {
+  pointClock += PHYS_DT
+  currentPressure = 0
+  // プレイヤーのみ更新(相手=マシンは定位置)
+  playerCtrl.update(PHYS_DT, ctxPlayer)
+
+  if (ballSim.state.inPlay) {
+    const events: BallEvent[] = ballSim.step(PHYS_DT)
+    for (const e of events) {
+      if (e.kind === 'bounce') {
+        renderer.sceneApi.spawnBounceFx(e.pos.clone())
+        sfx.play('bounce')
+      } else if (e.kind === 'net') {
+        sfx.play('net')
+      }
+    }
+    // 決着: 2バウンド or 場外(inPlay false)。少し待って次の球出し。
+    if (!ballSim.state.inPlay || ballSim.state.bounceCount >= 2) {
+      ballSim.state.inPlay = false
+      practiceFeedTimer = PRACTICE_FEED_DELAY
+    }
+  } else if (practiceFeedTimer > 0) {
+    practiceFeedTimer -= PHYS_DT
+    if (practiceFeedTimer <= 0) feedPracticeBall()
+  }
 }
 
 function quitToMenu(): void {
   phase = 'menu'
   paused = false
+  practiceActive = false
   ballSim.state.inPlay = false
   ui.setPaused(false)
   ui.showMenu()
@@ -621,6 +760,16 @@ function physicsStep(): void {
   }
   if (phase === 'menu' || phase === 'matchOver') return
   if (paused) return // ポーズ中は物理を進めない(描画は現フレームを維持)
+
+  // 練習モードは専用ステップ(ボールマシン)で処理して終了
+  if (practiceActive) {
+    practiceStep()
+    if (bannerTimer > 0) {
+      bannerTimer -= PHYS_DT
+      if (bannerTimer <= 0) banner = null
+    }
+    return
+  }
 
   // ポイント中(serve / rally)の経過時間(デバッグログのタイムスタンプ用)
   if (phase === 'serve' || phase === 'rally') pointClock += PHYS_DT
@@ -705,6 +854,7 @@ function frame(now: number): void {
     opponent: aiCtrl ? aiCtrl.view : dummyView('opponent'),
     landing: phase === 'rally' && ballSim.state.inPlay ? ballSim.predictLanding() : null,
     openCourt: computeOpenCourt(),
+    meetHint: computeMeetHint(),
   })
 
   if (phase !== 'menu') {
@@ -736,6 +886,8 @@ function frame(now: number): void {
       playerStaminaScreen: renderer.worldToScreen(playerHead),
       opponentStaminaScreen: renderer.worldToScreen(opponentHead),
       playerMomentum: momentumOf('player'),
+      // 練習モード成績(ジャスト/通常/セーフティの累計)。通常対戦では null。
+      practiceStats: practiceActive ? practiceStats : null,
     }
     ui.updateHud(hud)
   }
