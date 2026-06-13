@@ -350,8 +350,12 @@ export const AI_NET_SHORT_W = 0.5
 export const AI_SHORT_BALL_Z = SERVICE_LINE_Z + 1.0 // 7.4m
 /** 速球は詰めにくい。RETURN_PACE_THRESH 超過分に応じて減点する重み */
 export const AI_NET_PACE_W = 0.5
-/** ベースライン時、着地点より深く(ネットから遠く)下がって構える距離(m)。上がり際で打つ */
+/** ベースライン時、着地点より深く(ネットから遠く)下がって構える距離(m)。上がり際で打つ。
+ * ただし短い球(ドロップ等)はバウンド後に伸びないので後退せず、着地点よりやや前に出て拾う
+ * (BUG-002 対策。short の度合いで後退量を AI_BASELINE_DROPBACK→ −AI_SHORT_FORWARD へ補間)。 */
 export const AI_BASELINE_DROPBACK = 1.6
+/** 短い球に対し、着地点よりこれだけ前(ネット寄り)に構えて前進で拾う(m) */
+export const AI_SHORT_FORWARD = 1.5
 /** ネット時、着地点より前(ネット寄り)に出る距離(m)。空中/バウンド前に捉える */
 export const AI_NET_ADVANCE = 2.2
 /** ネットへ詰めても、ネットからこの距離より前には出ない(ネット際の下限) */

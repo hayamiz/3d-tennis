@@ -61,8 +61,18 @@ out なら out)。全 80 テスト・型チェック・ビルド green。
 
 ## BUG-002 — ドロップショットを AI が見送り(下がって構えて届かず)2バウンドで失点する
 
-- **ステータス**: 🔴 未着手
+- **ステータス**: 🟢 修正済み(commit: 後述)
 - **発見日**: 2026-06-13
+
+### 修正内容
+`stanceGoalZ`(`ai.ts`)の baseline 構えで、後退量を**着地の浅さで補間**するようにした:
+`offset = lerp(AI_BASELINE_DROPBACK(+1.6), −AI_SHORT_FORWARD(−1.5), shortness)`、
+`shortness = clamp((AI_SHORT_BALL_Z − 着地depth)/AI_SHORT_BALL_Z, 0, 1)`。
+深い球(depth ≥ 7.4m)は従来どおり +1.6m 後退、短い球(ドロップ)は着地点〜やや前に構え、
+`AI_NET_MIN_Z` でネット際にクランプ。これで前進してバウンド直後に拾える。
+検証 `scripts/measure9.mjs`: 深いホーム(z≈−12.9)から着地 z≈−2.9 のドロップに対し、
+hard/normal × 4ペルソナすべてで AI が前進して 1 バウンド目に打球(hit)できることを確認。
+全 83 テスト・型チェック・ビルド・マッチ完走 green。
 - **影響範囲**: `src/gameplay/ai.ts`(戦術スタンス `stanceGoalZ` の baseline 構え位置)/
   短い球・ドロップショットの処理。**戦術スタンス機能(GAME_DESIGN §7.1)導入による回帰**。
 

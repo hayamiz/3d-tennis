@@ -30,6 +30,7 @@ import {
   AI_NET_MIN_Z,
   AI_NET_PACE_W,
   AI_NET_SHORT_W,
+  AI_SHORT_FORWARD,
   AI_SERVE_DELAY_MAX,
   AI_SERVE_DELAY_MIN,
   AI_SHORT_BALL_Z,
@@ -669,8 +670,14 @@ export class AIController implements Controller {
       const advanced = Math.max(AI_NET_MIN_Z, depth - AI_NET_ADVANCE)
       return sign * advanced
     }
-    // baseline
-    return sign * (depth + AI_BASELINE_DROPBACK)
+    // baseline: 深い球はバウンド後さらに奥へ伸びるので後退して上がり際で打つ。
+    // 短い球(ドロップ等)はバウンド後に伸びず着地点付近で失速して死ぬため、後退すると
+    // 永久に届かない(BUG-002)。short の度合いで後退量を +DROPBACK→ −SHORT_FORWARD へ補間し、
+    // 短い球では着地点よりやや前に出て前進で拾う。
+    const shortness = clamp((AI_SHORT_BALL_Z - depth) / AI_SHORT_BALL_Z, 0, 1) // 深い=0, ネット際=1
+    const offset = lerp(AI_BASELINE_DROPBACK, -AI_SHORT_FORWARD, shortness)
+    const goalDepth = Math.max(AI_NET_MIN_Z, depth + offset)
+    return sign * goalDepth
   }
 
   // -------------------------------------------------------------------------
