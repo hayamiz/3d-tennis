@@ -476,9 +476,12 @@ export function personaModifiers(r: PersonaRatings, mental: number): PersonaModi
     returnSolidMul: 1.3 - 0.12 * r.spin,
     moveSpeedMul: 0.88 + 0.06 * r.speed,
     reachMul: 0.92 + 0.035 * r.speed,
-    staminaMaxMul: 0.7 + 0.12 * r.stamina,
-    staminaDrainMul: 1.2 - 0.1 * r.stamina,
-    staminaRegenMul: 0.8 + 0.1 * r.stamina,
+    // スタミナ系はレーティングの効き幅を圧縮(影響度を緩和)。低スタミナ(例ニシゴオリ s=2)が
+    // 早く切れすぎる一方でグラインダー(s=5)が極端に持つ差を縮める。中立(全1.0)は s≈2.5〜3。
+    // 旧: maxMul=0.7+0.12s / drainMul=1.2−0.1s / regenMul=0.8+0.1s(差が大きすぎた)。
+    staminaMaxMul: 0.8 + 0.1 * r.stamina,
+    staminaDrainMul: 1.14 - 0.08 * r.stamina,
+    staminaRegenMul: 0.84 + 0.09 * r.stamina,
     touchNoiseMul: 1.3 - 0.12 * r.finesse,
     returnTouchMul: 1.2 - 0.1 * r.finesse,
     // 精神力(隠し mental 由来。IMPROVEMENTS §5.5)
