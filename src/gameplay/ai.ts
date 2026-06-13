@@ -57,6 +57,7 @@ import {
   SHOT_PARAMS,
   SMASH_MAX_DEPTH,
   SMASH_MIN_HEIGHT,
+  SMASH_MOTION_HEIGHT,
   SPRINT_SHOT_PENALTY,
   SPRINT_SPEED,
   STAMINA_LOW_THRESHOLD,
@@ -169,6 +170,7 @@ export class AIController implements Controller {
   private swingTimer = 0 // スイング/空振り演出の残り時間
   /** 打球時に設定するフォア/バック種別(表示用) */
   private swingSide: 'fore' | 'back' | null = null
+  private swingKind: 'normal' | 'smash' = 'normal' // 高い打点のオーバーヘッド表示用
   /** スイングロック残り時間(SWING_LOCK_TIME 秒間は移動速度を低下) */
   private swingLockTimer = 0
 
@@ -230,6 +232,7 @@ export class AIController implements Controller {
       charging: false,
       charge: 0,
       swingSide: null,
+      swingKind: 'normal',
     }
   }
 
@@ -244,6 +247,7 @@ export class AIController implements Controller {
     this._view.charging = false
     this._view.charge = 0
     this._view.swingSide = this.swingState === 'swing' ? this.swingSide : null
+    this._view.swingKind = this.swingState === 'swing' ? this.swingKind : 'normal'
     return this._view
   }
 
@@ -510,6 +514,7 @@ export class AIController implements Controller {
     this.swingLockTimer = SWING_LOCK_TIME
     // サーブは常にフォアハンド(利き手側)とみなす
     this.swingSide = 'fore'
+    this.swingKind = 'smash' // サーブは頭上のオーバーヘッドモーション
     this.lastShot = 'flat'
   }
 
@@ -910,6 +915,8 @@ export class AIController implements Controller {
       bpos.x < this.pos.x === handLeftIsWorldNegX
     const foreSide = this.physique.handedness === 'left' ? !ballOnHandSide : ballOnHandSide
     this.swingSide = foreSide ? 'fore' : 'back'
+    // 高い打点はオーバーヘッド(スマッシュ)モーション
+    this.swingKind = bpos.y >= SMASH_MOTION_HEIGHT ? 'smash' : 'normal'
 
     this.swingState = 'swing'
     this.swingTimer = AI_SWING_DISPLAY_TIME

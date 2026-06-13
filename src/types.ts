@@ -239,6 +239,11 @@ export interface PlayerView {
   charge: number
   /** スイング種別(フォア=利き手側/バック)。スイング中以外は null */
   swingSide: 'fore' | 'back' | null
+  /**
+   * スイングの種類。'smash'=高い打点のオーバーヘッド(スマッシュ/サーブ)モーション、
+   * 'normal'=通常のフォア/バック。描画側がモーションを切り替える。省略時は 'normal'。
+   */
+  swingKind?: 'normal' | 'smash'
 }
 
 /** サーブメーター表示用 */

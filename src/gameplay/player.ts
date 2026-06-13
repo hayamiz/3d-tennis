@@ -38,6 +38,7 @@ import {
   SPRINT_SHOT_PENALTY,
   SHOT_PARAMS,
   SMASH_MIN_HEIGHT,
+  SMASH_MOTION_HEIGHT,
   SMASH_MAX_DEPTH,
   MOMENTUM_QUALITY_K,
   PRESSURE_CHOKE_K,
@@ -120,6 +121,7 @@ export class PlayerController implements Controller {
   private swingTimer = 0 // スイング表示残り秒数('whiff' は打たずに離した直後の表示)
   private lastShot: ShotType | null = null
   private swingSide: 'fore' | 'back' | null = null
+  private swingKind: 'normal' | 'smash' = 'normal' // 高い打点のオーバーヘッド表示用
 
   // チャージ状態管理
   private charging = false
@@ -127,6 +129,9 @@ export class PlayerController implements Controller {
   private chargeShot: ShotType | null = null // チャージ中のショット種(最初に押したキー)
   private chargeCooldown = 0 // 空チャージ後の再チャージ不可残り秒数
   private swingLockTimer = 0 // 打球後の移動ロック残り秒数
+  // 見送り/空振り診断(?debug): 相手球の最接近を記録し、返せず終わったらログ
+  private missTrack: { minH: number; ball: Vector3; me: Vector3; everHittable: boolean } | null = null
+  private missArmed = false
 
   // サーブメーター
   private meterActive = false
@@ -160,6 +165,7 @@ export class PlayerController implements Controller {
     charging: false,
     charge: 0,
     swingSide: null,
+    swingKind: 'normal',
   }
 
   constructor(input: InputSource, mods: PersonaModifiers, physique: PersonaPhysique) {
@@ -332,6 +338,7 @@ export class PlayerController implements Controller {
         this.swingState = 'swing'
         this.swingTimer = SWING_DISPLAY_DURATION
         this.swingSide = 'fore' // サーブはフォア扱いで表示
+        this.swingKind = 'smash' // サーブは頭上のオーバーヘッドモーション
         this.lastShot = 'flat' // サーブはフラット扱いで記録
       }
     }
@@ -396,6 +403,9 @@ export class PlayerController implements Controller {
     const isSprinting = inp.sprint && this.stamina > 0
     this.applyMovement(dt, inp, isSprinting)
 
+    // ---- 見送り/未到達の診断ログ(?debug) ----
+    this.trackMiss(ctx)
+
     // ---- 打球(リリースで打つ。§4.4)----
     // チャージキーを離した瞬間にリーチ内なら打球。スイートゾーン(芯)で離すとジャスト。
     // 離さずにいてもボールがスイートゾーンを抜けて遠ざかり出したらセーフティ打球。
@@ -434,6 +444,29 @@ export class PlayerController implements Controller {
         this.executeShot(shotType, inp, ctx, isSprinting, just, hDist, 'release')
       } else {
         // リーチ外で離した = 空振り。再チャージ不可時間に入る。
+        // 診断ログ(?debug): 何がズレて空振りしたか(ボール位置・自位置・距離・高さ)。
+        const tooFar = hDist > this.effReach
+        const tooHigh = ball.pos.y > REACH_HEIGHT
+        const reason = !ball.inPlay
+          ? 'no-ball'
+          : ball.lastHitBy === this.side
+            ? 'own-ball'
+            : `${tooFar ? 'TOO-FAR' : ''}${tooHigh ? (tooFar ? '+HIGH' : 'TOO-HIGH') : ''}` || 'in-reach?'
+        ctx.logDebug?.({
+          kind: 'note',
+          msg: `whiff(${reason}) ball=(${ball.pos.x.toFixed(2)},${ball.pos.y.toFixed(2)},${ball.pos.z.toFixed(2)}) me=(${this.pos.x.toFixed(2)},${this.pos.z.toFixed(2)}) hDist=${hDist.toFixed(2)}/${this.effReach.toFixed(2)} y=${ball.pos.y.toFixed(2)}/${REACH_HEIGHT}`,
+          data: {
+            reason,
+            ballX: Math.round(ball.pos.x * 100) / 100,
+            ballY: Math.round(ball.pos.y * 100) / 100,
+            ballZ: Math.round(ball.pos.z * 100) / 100,
+            meX: Math.round(this.pos.x * 100) / 100,
+            meZ: Math.round(this.pos.z * 100) / 100,
+            hDist: Math.round(hDist * 100) / 100,
+            effReach: Math.round(this.effReach * 100) / 100,
+            reachHeight: REACH_HEIGHT,
+          },
+        })
         this.charging = false
         this.charge = 0
         this.chargeShot = null
@@ -457,6 +490,53 @@ export class PlayerController implements Controller {
       if (droppingLow || (recedingH && hDist > JUST_SWEET_DIST)) {
         this.executeShot(shotType, inp, ctx, isSprinting, false, hDist, 'safety')
       }
+    }
+  }
+
+  /**
+   * 見送り/未到達の診断(?debug)。相手から来ている球の「最接近(hDist 最小)」を記録し、
+   * その球を返せずに終わったら(自分が打たないまま消えた)、最接近時のボール位置・自位置・
+   * 距離・到達可否(everHittable)・理由(TOO-FAR/TOO-HIGH/in-reach未打)をログ出力する。
+   * チャージで前に走れず届かない(=最接近が effReach 超)等の原因切り分けに使う。
+   */
+  private trackMiss(ctx: ControlContext): void {
+    const b = ctx.ball
+    const incoming = b.inPlay && b.lastHitBy !== this.side
+    if (incoming) {
+      const hd = Math.hypot(b.pos.x - this.pos.x, b.pos.z - this.pos.z)
+      const hittable = hd <= this.effReach && b.pos.y <= REACH_HEIGHT
+      if (!this.missTrack) {
+        this.missTrack = { minH: Infinity, ball: new Vector3(), me: new Vector3(), everHittable: false }
+      }
+      if (hd < this.missTrack.minH) {
+        this.missTrack.minH = hd
+        this.missTrack.ball.copy(b.pos)
+        this.missTrack.me.copy(this.pos)
+      }
+      if (hittable) this.missTrack.everHittable = true
+      this.missArmed = true
+    } else if (this.missArmed) {
+      // 来ていた相手球が終わった。自分が打っていなければ「返せず=見送り/未到達」
+      const t = this.missTrack
+      if (b.lastHitBy !== this.side && t) {
+        const reason = t.everHittable ? 'in-reach-未打' : t.minH > this.effReach ? 'TOO-FAR' : 'TOO-HIGH'
+        ctx.logDebug?.({
+          kind: 'note',
+          msg: `miss(${reason}) closest hDist=${t.minH.toFixed(2)}/${this.effReach.toFixed(2)} ball=(${t.ball.x.toFixed(2)},${t.ball.y.toFixed(2)},${t.ball.z.toFixed(2)}) me=(${t.me.x.toFixed(2)},${t.me.z.toFixed(2)})`,
+          data: {
+            reason,
+            minHDist: Math.round(t.minH * 100) / 100,
+            effReach: Math.round(this.effReach * 100) / 100,
+            ballX: Math.round(t.ball.x * 100) / 100,
+            ballY: Math.round(t.ball.y * 100) / 100,
+            ballZ: Math.round(t.ball.z * 100) / 100,
+            meX: Math.round(t.me.x * 100) / 100,
+            meZ: Math.round(t.me.z * 100) / 100,
+          },
+        })
+      }
+      this.missArmed = false
+      this.missTrack = null
     }
   }
 
@@ -622,6 +702,8 @@ export class PlayerController implements Controller {
     const ballOnRight = ball.pos.x >= this.pos.x
     const foreSide = this.physique.handedness === 'left' ? !ballOnRight : ballOnRight
     this.swingSide = foreSide ? 'fore' : 'back'
+    // 高い打点はオーバーヘッド(スマッシュ)モーションで表示する
+    this.swingKind = ball.pos.y >= SMASH_MOTION_HEIGHT ? 'smash' : 'normal'
 
     // スイング状態更新 + チャージ解除 + インパクト硬直開始
     this.swingState = 'swing'
@@ -830,6 +912,7 @@ export class PlayerController implements Controller {
       charging: this.charging,
       charge: this.charge,
       swingSide: this.swingSide,
+      swingKind: this.swingKind,
     }
   }
 

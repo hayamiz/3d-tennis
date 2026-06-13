@@ -420,6 +420,7 @@ export class CharacterEntity {
   private swingPhase = 0 // 0=idle, 0..1 テイクバック→フォロースルーの正規化進行
   private swinging = false
   private swingDir: 'fore' | 'back' = 'fore'
+  private swingSmash = false // このスイングがスマッシュ(オーバーヘッド)か
   private whiffAngle = 0
   private footCycle = 0 // 走りモーションの位相
   private chargeShake = 0 // オーバーチャージの震え位相
@@ -856,6 +857,8 @@ export class CharacterEntity {
         this.swingPhase = 0
         // swingSide が決まっていればそれを使う(なければフォア)
         this.swingDir = view.swingSide ?? 'fore'
+        // 高い打点はオーバーヘッド(スマッシュ)モーションで振る
+        this.swingSmash = view.swingKind === 'smash'
       }
     } else {
       this.swinging = false
@@ -919,7 +922,8 @@ export class CharacterEntity {
       // スイング進行: テイクバック→フォワード→フォロースルー(約0.3秒)
       // -----------------------------------------------------------------------
       this.swingPhase = Math.min(this.swingPhase + dt / 0.3, 1.0)
-      this.applySwing(this.swingDir, this.swingPhase)
+      if (this.swingSmash) this.applySmashSwing(this.swingPhase)
+      else this.applySwing(this.swingDir, this.swingPhase)
     } else {
       // -----------------------------------------------------------------------
       // 通常: 走り腕振り or 構えへ戻す
@@ -991,6 +995,38 @@ export class CharacterEntity {
     } else {
       this.lShoulder.rotation.z = -arm * 0.3
     }
+  }
+
+  /**
+   * スマッシュ/サーブのオーバーヘッドモーションを進行 p(0..1)で適用。
+   * p<0.4: 利き腕を頭上後方へ引き上げ(肘を曲げてラケットを背中へ)、非利き手を上げて照準。
+   * p≥0.4: 一気に振り下ろし、肘を伸ばして頭上で捉え→前方へフォロースルー。
+   * 横振り(フォア/バック)と違い、肩の縦回転(x 軸)が主役で「上から叩く」動きになる。
+   */
+  private applySmashSwing(p: number): void {
+    let shoulderX: number
+    let elbow: number
+    let torso: number
+    let lArmUp: number
+    if (p < 0.4) {
+      const u = p / 0.4
+      shoulderX = THREE.MathUtils.lerp(-0.4, -2.6, u) // 頭上後方へ引き上げ
+      elbow = THREE.MathUtils.lerp(-0.3, -1.7, u) // 肘を曲げてラケットを背中へ
+      torso = THREE.MathUtils.lerp(0, 0.25, u)
+      lArmUp = THREE.MathUtils.lerp(0, -1.3, u) // 非利き手を上げる(照準)
+    } else {
+      const u = (p - 0.4) / 0.6
+      shoulderX = THREE.MathUtils.lerp(-2.6, 0.5, u) // 一気に振り下ろす
+      elbow = THREE.MathUtils.lerp(-1.7, -0.2, u) // 肘を伸ばして打点→フォロー
+      torso = THREE.MathUtils.lerp(0.25, -0.15, u)
+      lArmUp = THREE.MathUtils.lerp(-1.3, 0, u) // 非利き手を下ろす
+    }
+    this.rShoulder.rotation.x = shoulderX
+    this.rShoulder.rotation.z = 0.12 // ほぼ正面(横に振らない)
+    this.rElbow.rotation.x = elbow
+    this.torso.rotation.y = torso * 0.3
+    this.lShoulder.rotation.x = lArmUp
+    this.lShoulder.rotation.z = 0
   }
 
   /** スイング/チャージ外: 走り腕振り or ニュートラルへ戻す */
