@@ -505,51 +505,82 @@ canvas#game-canvas {
   border: 1px solid rgba(100, 220, 100, 0.4);
 }
 
-/* --- スタミナバー --- */
+/* --- スタミナバー(補助表示: 円形ゲージが主表示。ごく小さく縮小) --- */
 .hud-stamina {
   position: absolute;
-  bottom: 28px;
+  bottom: 16px;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
-  min-width: 120px;
+  gap: 0.18rem;
+  min-width: 72px;
+  opacity: 0.55;
 }
 
 .hud-stamina.player-side {
-  left: 24px;
+  left: 16px;
   align-items: flex-start;
 }
 
 .hud-stamina.opponent-side {
-  right: 24px;
+  right: 16px;
   align-items: flex-end;
 }
 
 .stamina-label {
-  font-size: clamp(0.72rem, 1.2vw, 0.9rem);
-  letter-spacing: 0.15em;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #7a8a9a;
 }
 
 .stamina-bar-outer {
-  width: 140px;
-  height: 10px;
+  width: 72px;
+  height: 5px;
   background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  border-radius: 3px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .stamina-bar-inner {
   height: 100%;
-  border-radius: 4px;
+  border-radius: 3px;
   background: #6ab040;
   transition: width 0.12s ease-out, background 0.3s ease;
 }
 
 .stamina-bar-inner.low {
   background: #d04040;
+}
+
+/* ===========================================================================
+ * 円形スタミナゲージ(キャラ頭上追従)— IMPROVEMENTS §5.8(A)
+ * ========================================================================= */
+
+/*
+ * コンテナ: position:absolute で HUD スクリーンの指定座標に追従する。
+ * left/top は updateHud が毎フレーム設定。transform で頭上に浮かせる。
+ */
+.stamina-ring {
+  position: absolute;
+  /* アンカー点(頭上スクリーン座標)に対して水平中央・頭上へ浮かせる */
+  transform: translate(-50%, -115%);
+  pointer-events: none;
+  /* SVG と ラベルを重ねるために relative コンテキスト */
+  display: block;
+}
+
+/* プレイヤー(1P 青枠: 大きめ・明るめ) */
+.stamina-ring-player {
+  /* サイズは JS 側で設定(radius=22 → size=54px) */
+  filter: drop-shadow(0 0 4px rgba(68, 136, 255, 0.5));
+}
+
+/* 相手(2P 赤枠: 小さめ・控えめ) */
+.stamina-ring-opponent {
+  /* サイズは JS 側で設定(radius=17 → size=44px) */
+  filter: drop-shadow(0 0 3px rgba(255, 80, 80, 0.35));
+  opacity: 0.82;
 }
 
 /* --- サーブメーター(縦バー、右寄り) --- */

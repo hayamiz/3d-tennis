@@ -297,9 +297,17 @@ ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ sp
 最高速        : (WALK/SPRINT)_SPEED *= m.moveSpeedMul
 リーチ        : effReach = REACH * m.reachMul(打球可否ゲートと距離品質係数の両方で使う)
 スタミナ上限  : effStaminaMax = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
-スタミナ消耗  : STAMINA_SPRINT_DRAIN *= m.staminaDrainMul
-スタミナ回復  : STAMINA_REGEN *= m.staminaRegenMul
 利き手        : physique.handedness==='left' なら swingSide(fore/back)判定を左右反転
+
+スタミナ消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2-5.5):
+  毎フレーム dStamina/dt = +STAMINA_REGEN_IDLE·m.staminaRegenMul·m.clutchRecoveryMul
+                          − STAMINA_MOVE_DRAIN_K·speed·driveMul
+                          − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+    speed = 現在の水平速度の大きさ。driveMul = m.staminaDrainMul·(1 + (m.pressureDrainMul−1)·pressure)
+  打球インパクト時に1回: stamina −= shotStaminaCost(type,charge,isSmash)·driveMul
+  ポイント間回復(STAMINA_POINT_RECOVERY)・全回復は ×m.clutchRecoveryMul、上限 effStaminaMax。
+  view.staminaPct = stamina / effStaminaMax を毎フレーム公開(ゲージ・発汗用)。
+  低スタミナの品質低下(calcStaminaFactor)は据え置き(効き方は割合で判定)。
 ```
 各 ShotRequest には自分の `mods` を添付してソルバへ渡す。
 

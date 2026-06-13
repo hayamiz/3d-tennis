@@ -21,7 +21,7 @@ function smashReturnApex(mods){ // vIn=50 を無チャージ topspin で返し�
 
 console.log('persona'.padEnd(12),'serve'.padStart(7),'flat'.padStart(7),'返球apex'.padStart(8),'走力'.padStart(7),'体力'.padStart(7),'リーチ'.padStart(7))
 for(const id of PERSONA_ORDER){
-  const p=PLAYER_PERSONAS[id]; const m=personaModifiers(p.ratings)
+  const p=PLAYER_PERSONAS[id]; const m=personaModifiers(p.ratings, p.mental)
   console.log(id.padEnd(12),
     avgServe(m).toFixed(1).padStart(7),
     avgFlat(m).toFixed(1).padStart(7),

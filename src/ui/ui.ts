@@ -17,6 +17,8 @@ import {
   SERVE_SWEET_MAX,
   STAMINA_LOW_THRESHOLD,
   STAMINA_MAX,
+  STAMINA_GAUGE_GREEN,
+  STAMINA_GAUGE_YELLOW,
   PLAYER_PERSONAS,
   PERSONA_ORDER,
 } from '../constants'
@@ -59,6 +61,9 @@ interface HudCache {
   chargeOvercharged: boolean
   /** 選択中のサーブ種類(サーブフェーズ表示用) */
   serveType: ServeType
+  /** 円形ゲージ: 前回の pct 値(差分更新用) */
+  playerStaminaPct: number
+  opponentStaminaPct: number
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +319,24 @@ export class UI {
   private readonly hudMiDiff: HTMLElement
   private readonly hudMiOpponent: HTMLElement
 
+  // -------------------------------------------------------------------------
+  // 円形スタミナゲージ(キャラ頭上追従)
+  // -------------------------------------------------------------------------
+
+  /** プレイヤー円形ゲージのコンテナ(position:absolute で頭上に追従) */
+  private readonly staminaRingPlayer: HTMLElement
+  /** プレイヤー用 SVG の弧(stroke-dashoffset で残量を表現) */
+  private readonly staminaRingPlayerArc: SVGCircleElement
+  /** プレイヤー用ゲージ中央のパーセント表示ラベル */
+  private readonly staminaRingPlayerLabel: HTMLElement
+
+  /** 相手円形ゲージのコンテナ */
+  private readonly staminaRingOpponent: HTMLElement
+  /** 相手用 SVG の弧 */
+  private readonly staminaRingOpponentArc: SVGCircleElement
+  /** 相手用ゲージ中央のパーセント表示ラベル */
+  private readonly staminaRingOpponentLabel: HTMLElement
+
   /** ポーズ画面のコンテナ */
   private readonly pauseScreen: HTMLElement
 
@@ -356,6 +379,8 @@ export class UI {
     chargeValue: undefined as unknown as null,
     chargeOvercharged: false,
     serveType: 'flat',
+    playerStaminaPct: -1,
+    opponentStaminaPct: -1,
   }
 
   constructor(root: HTMLElement, handlers: UIHandlers) {
@@ -393,6 +418,19 @@ export class UI {
 
     // ポーズ画面を構築
     this.pauseScreen = this.buildPauseScreen()
+
+    // 円形スタミナゲージを構築(HUD スクリーンに追加)
+    const playerRingRefs = this.buildStaminaRing('player')
+    this.staminaRingPlayer = playerRingRefs.container
+    this.staminaRingPlayerArc = playerRingRefs.arc
+    this.staminaRingPlayerLabel = playerRingRefs.label
+    this.hudScreen.appendChild(this.staminaRingPlayer)
+
+    const opponentRingRefs = this.buildStaminaRing('opponent')
+    this.staminaRingOpponent = opponentRingRefs.container
+    this.staminaRingOpponentArc = opponentRingRefs.arc
+    this.staminaRingOpponentLabel = opponentRingRefs.label
+    this.hudScreen.appendChild(this.staminaRingOpponent)
 
     root.appendChild(this.menuScreen)
     root.appendChild(this.hudScreen)
@@ -478,20 +516,49 @@ export class UI {
       c.server = score.server
     }
 
-    // --- スタミナ(プレイヤー) ---
+    // --- 下部スタミナバー(補助表示: 円形ゲージが主表示のため小さく維持) ---
     if (playerStamina !== c.playerStamina) {
       const pct = Math.max(0, Math.min(100, (playerStamina / STAMINA_MAX) * 100))
       this.hudStaminaPlayerBar.style.width = `${pct}%`
       this.hudStaminaPlayerBar.classList.toggle('low', playerStamina < STAMINA_LOW_THRESHOLD)
       c.playerStamina = playerStamina
     }
-
-    // --- スタミナ(相手) ---
     if (opponentStamina !== c.opponentStamina) {
       const pct = Math.max(0, Math.min(100, (opponentStamina / STAMINA_MAX) * 100))
       this.hudStaminaOpponentBar.style.width = `${pct}%`
       this.hudStaminaOpponentBar.classList.toggle('low', opponentStamina < STAMINA_LOW_THRESHOLD)
       c.opponentStamina = opponentStamina
+    }
+
+    // --- 円形スタミナゲージ(キャラ頭上追従: 毎フレーム位置・残量更新) ---
+    // プレイヤーゲージ
+    const psPct = view.playerStaminaPct
+    const psScreen = view.playerStaminaScreen
+    if (psScreen) {
+      this.staminaRingPlayer.classList.remove('hidden')
+      this.staminaRingPlayer.style.left = `${psScreen.x}px`
+      this.staminaRingPlayer.style.top = `${psScreen.y}px`
+    } else {
+      this.staminaRingPlayer.classList.add('hidden')
+    }
+    if (psPct !== c.playerStaminaPct) {
+      this.updateStaminaRingArc(this.staminaRingPlayerArc, this.staminaRingPlayerLabel, psPct)
+      c.playerStaminaPct = psPct
+    }
+
+    // 相手ゲージ
+    const osPct = view.opponentStaminaPct
+    const osScreen = view.opponentStaminaScreen
+    if (osScreen) {
+      this.staminaRingOpponent.classList.remove('hidden')
+      this.staminaRingOpponent.style.left = `${osScreen.x}px`
+      this.staminaRingOpponent.style.top = `${osScreen.y}px`
+    } else {
+      this.staminaRingOpponent.classList.add('hidden')
+    }
+    if (osPct !== c.opponentStaminaPct) {
+      this.updateStaminaRingArc(this.staminaRingOpponentArc, this.staminaRingOpponentLabel, osPct)
+      c.opponentStaminaPct = osPct
     }
 
     // --- サーブメーター ---
@@ -1143,6 +1210,120 @@ export class UI {
   }
 
   // -------------------------------------------------------------------------
+  // 円形スタミナゲージ構築・更新
+  // -------------------------------------------------------------------------
+
+  /**
+   * 円形スタミナゲージ DOM を構築して返す。
+   * side='player' は大きめ(青枠)、side='opponent' は小さめ(赤枠)。
+   * SVG の stroke-dasharray/dashoffset でリング弧の残量を表現する。
+   */
+  private buildStaminaRing(side: 'player' | 'opponent'): {
+    container: HTMLElement
+    arc: SVGCircleElement
+    label: HTMLElement
+  } {
+    // プレイヤー: 半径 22px、相手: 17px
+    const radius = side === 'player' ? 22 : 17
+    const size = (radius + 5) * 2  // コンテナサイズ(px)
+    const cx = radius + 5
+    const cy = radius + 5
+    // 円周 = 2πr
+    const circumference = 2 * Math.PI * radius
+
+    // 外側コンテナ(position:absolute で頭上に追従)
+    const container = el('div', `stamina-ring stamina-ring-${side} hidden`)
+    container.style.width = `${size}px`
+    container.style.height = `${size}px`
+
+    // SVG 本体
+    const svgNS = 'http://www.w3.org/2000/svg'
+    const svg = document.createElementNS(svgNS, 'svg')
+    svg.setAttribute('width', String(size))
+    svg.setAttribute('height', String(size))
+    svg.style.position = 'absolute'
+    svg.style.inset = '0'
+
+    // --- 背景リング(薄い縁取り: チームカラー) ---
+    const trackCircle = document.createElementNS(svgNS, 'circle')
+    trackCircle.setAttribute('cx', String(cx))
+    trackCircle.setAttribute('cy', String(cy))
+    trackCircle.setAttribute('r', String(radius))
+    trackCircle.setAttribute('fill', 'none')
+    trackCircle.setAttribute('stroke', side === 'player' ? 'rgba(68,136,255,0.4)' : 'rgba(255,80,80,0.4)')
+    trackCircle.setAttribute('stroke-width', side === 'player' ? '4' : '3')
+    svg.appendChild(trackCircle)
+
+    // --- 残量アーク(12時から時計回り。初期は満タン) ---
+    const arcCircle = document.createElementNS(svgNS, 'circle') as SVGCircleElement
+    arcCircle.setAttribute('cx', String(cx))
+    arcCircle.setAttribute('cy', String(cy))
+    arcCircle.setAttribute('r', String(radius))
+    arcCircle.setAttribute('fill', 'none')
+    arcCircle.setAttribute('stroke', '#6ab040')  // 初期色: 緑
+    arcCircle.setAttribute('stroke-width', side === 'player' ? '5' : '4')
+    arcCircle.setAttribute('stroke-linecap', 'round')
+    // 12時(上)から開始するために -90度回転
+    arcCircle.setAttribute('transform', `rotate(-90 ${cx} ${cy})`)
+    // 満タン状態(dashoffset=0 で全周が塗られる)
+    arcCircle.setAttribute('stroke-dasharray', String(circumference))
+    arcCircle.setAttribute('stroke-dashoffset', '0')
+    svg.appendChild(arcCircle)
+
+    container.appendChild(svg)
+
+    // --- 中央のパーセント表示ラベル ---
+    const label = el('div', 'stamina-ring-label', '100')
+    label.style.position = 'absolute'
+    label.style.inset = '0'
+    label.style.display = 'flex'
+    label.style.alignItems = 'center'
+    label.style.justifyContent = 'center'
+    label.style.fontSize = side === 'player' ? '11px' : '9px'
+    label.style.fontWeight = '700'
+    label.style.color = '#fff'
+    label.style.textShadow = '0 1px 3px rgba(0,0,0,0.8)'
+    label.style.pointerEvents = 'none'
+    container.appendChild(label)
+
+    return { container, arc: arcCircle, label }
+  }
+
+  /**
+   * 円形ゲージの弧と色を pct(0..1) に応じて更新する。
+   * STAMINA_GAUGE_GREEN/YELLOW 境界で緑→黄→赤に色変化させる。
+   * circumference は arc の stroke-dasharray から読み取る。
+   */
+  private updateStaminaRingArc(
+    arc: SVGCircleElement,
+    label: HTMLElement,
+    pct: number,
+  ): void {
+    const clampedPct = Math.max(0, Math.min(1, pct))
+    // dasharray 属性から周長を取得
+    const circumference = parseFloat(arc.getAttribute('stroke-dasharray') ?? '138')
+    // dashoffset = 周長 × (1 - pct) で残量の弧を描く
+    const offset = circumference * (1 - clampedPct)
+    arc.setAttribute('stroke-dashoffset', String(offset))
+
+    // 色判定: pct >= GREEN=緑、>= YELLOW=黄、< YELLOW=赤
+    let color: string
+    if (clampedPct >= STAMINA_GAUGE_GREEN) {
+      color = '#6ab040'  // 緑(余裕)
+    } else if (clampedPct >= STAMINA_GAUGE_YELLOW) {
+      color = '#d4b040'  // 黄(注意)
+    } else {
+      color = '#d04040'  // 赤(危険)
+    }
+    arc.setAttribute('stroke', color)
+
+    // ラベル: パーセント整数表示
+    const pctInt = Math.round(clampedPct * 100)
+    label.textContent = String(pctInt)
+    label.style.color = color
+  }
+
+  // -------------------------------------------------------------------------
   // 内部ヘルパー
   // -------------------------------------------------------------------------
 
@@ -1165,6 +1346,9 @@ export class UI {
       chargeOvercharged: false,
       // 空文字列で無効化し、次フレームで必ず再描画させる
       serveType: '' as ServeType,
+      // 円形ゲージ: -1 で無効化
+      playerStaminaPct: -1,
+      opponentStaminaPct: -1,
     }
   }
 }

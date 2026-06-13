@@ -243,11 +243,40 @@ export const MOVE_Z_MAX = 15.5
 
 // スタミナ
 export const STAMINA_MAX = 100
-export const STAMINA_SPRINT_DRAIN = 18 // /s
-export const STAMINA_REGEN = 6 // /s(非スプリント時)
 export const STAMINA_POINT_RECOVERY = 40 // ポイント間
 export const STAMINA_LOW_THRESHOLD = 30 // これ未満で品質低下開始
 export const STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
+
+// 連続消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2)
+// dStamina/dt = +REGEN_IDLE − MOVE_DRAIN_K·speed − SPRINT_EXTRA·[sprinting]
+// (移動・スプリント消費に mods.staminaDrainMul、基礎回復に mods.staminaRegenMul を乗算)
+export const STAMINA_REGEN_IDLE = 7 // /s 常時の基礎回復(速度0で全量)
+export const STAMINA_MOVE_DRAIN_K = 1.4 // /s あたり(m/s)。drain = K·speed
+export const STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
+
+// 強いショットの打球時消費(インパクト時に1回。IMPROVEMENTS §5.3)
+export const SHOT_STAMINA_BASE: Record<ShotType, number> = {
+  flat: 4, topspin: 3, slice: 1.5, lob: 1, drop: 1,
+}
+export const SHOT_STAMINA_CHARGE = 8 // · min(charge,1)
+export const SHOT_STAMINA_OVERCHARGE = 4 // · max(0, charge−1)/(CHARGE_MAX−1)
+export const SMASH_STAMINA_EXTRA = 4 // スマッシュ成立時の追加
+
+/** ショット1回の消費を算出(IMPROVEMENTS §5.3)。isSmash はスマッシュ成立時 true */
+export function shotStaminaCost(type: ShotType, charge: number, isSmash: boolean): number {
+  const c = Math.max(0, Math.min(CHARGE_MAX, charge))
+  let cost = SHOT_STAMINA_BASE[type]
+  cost += SHOT_STAMINA_CHARGE * Math.min(c, 1)
+  cost += SHOT_STAMINA_OVERCHARGE * (Math.max(0, c - 1) / Math.max(CHARGE_MAX - 1, 1e-6))
+  if (isSmash) cost += SMASH_STAMINA_EXTRA
+  return cost
+}
+
+// スタミナ可視化(IMPROVEMENTS §5.8)。pct = stamina/effStaminaMax で判定。
+export const STAMINA_GAUGE_GREEN = 0.6 // これ以上は緑(余裕)
+export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意) = LOW_THRESHOLD/MAX
+export const STAMINA_SWEAT_START = 0.45 // この割合未満で発汗開始
+export const STAMINA_SWEAT_MAX_RATE = 14 // /s(pct→0 で最大放出レート)
 
 // ---------------------------------------------------------------------------
 // AI
@@ -311,6 +340,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 5, power: 4, spin: 2, speed: 3, stamina: 3, finesse: 4 },
     physique: { heightM: 1.88, build: 'athletic', handedness: 'right' },
     appearance: { hair: 'short', sleeves: 'sleeved', accent: 0xffffff },
+    mental: 4,
   },
   agachi: {
     id: 'agachi',
@@ -320,6 +350,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 3, power: 5, spin: 3, speed: 3, stamina: 4, finesse: 2 },
     physique: { heightM: 1.8, build: 'athletic', handedness: 'right' },
     appearance: { hair: 'bald', sleeves: 'sleeved', accent: 0xff8a3d },
+    mental: 3,
   },
   jokovin: {
     id: 'jokovin',
@@ -329,6 +360,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 2, power: 3, spin: 5, speed: 4, stamina: 5, finesse: 3 },
     physique: { heightM: 1.88, build: 'slim', handedness: 'right' },
     appearance: { hair: 'headband', sleeves: 'sleeved', accent: 0xc6ff3d },
+    mental: 5,
   },
   nishigoori: {
     id: 'nishigoori',
@@ -338,6 +370,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 2, power: 3, spin: 3, speed: 5, stamina: 2, finesse: 5 },
     physique: { heightM: 1.78, build: 'slim', handedness: 'right' },
     appearance: { hair: 'short', sleeves: 'sleeved', accent: 0xffd23d },
+    mental: 2,
   },
   nadau: {
     id: 'nadau',
@@ -347,6 +380,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 2, power: 4, spin: 5, speed: 3, stamina: 5, finesse: 2 },
     physique: { heightM: 1.85, build: 'stocky', handedness: 'left' },
     appearance: { hair: 'long', sleeves: 'sleeveless', accent: 0x33cc66 },
+    mental: 5,
   },
   federun: {
     id: 'federun',
@@ -356,6 +390,7 @@ export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
     ratings: { serve: 4, power: 4, spin: 2, speed: 4, stamina: 3, finesse: 4 },
     physique: { heightM: 1.85, build: 'athletic', handedness: 'right' },
     appearance: { hair: 'headband', sleeves: 'sleeved', accent: 0x222222 },
+    mental: 4,
   },
 }
 
@@ -373,7 +408,7 @@ export const PERSONA_ORDER: PersonaId[] = [
  * 能力値(1..5)→ 倍率を導出する(docs/ARCHITECTURE.md §6.5)。
  * r=3 を平均(おおむね現状付近)、最強でも 1.1〜1.3 倍程度に抑える。
  */
-export function personaModifiers(r: PersonaRatings): PersonaModifiers {
+export function personaModifiers(r: PersonaRatings, mental: number): PersonaModifiers {
   return {
     serveSpeedMul: 0.92 + 0.04 * r.serve,
     serveFaultMul: 1.3 - 0.12 * r.serve,
@@ -389,6 +424,9 @@ export function personaModifiers(r: PersonaRatings): PersonaModifiers {
     staminaRegenMul: 0.8 + 0.1 * r.stamina,
     touchNoiseMul: 1.3 - 0.12 * r.finesse,
     returnTouchMul: 1.2 - 0.1 * r.finesse,
+    // 精神力(隠し mental 由来。IMPROVEMENTS §5.5)
+    clutchRecoveryMul: 0.85 + 0.07 * mental, // m5→1.20 / m1→0.92
+    pressureDrainMul: 1.3 - 0.1 * mental, // m5→0.80 / m1→1.20
   }
 }
 
@@ -397,5 +435,5 @@ export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
   serveSpeedMul: 1, serveFaultMul: 1, shotSpeedMul: 1, chargeGainMul: 1,
   aimNoiseMul: 1, netMarginMul: 1, returnSolidMul: 1, moveSpeedMul: 1,
   reachMul: 1, staminaMaxMul: 1, staminaDrainMul: 1, staminaRegenMul: 1,
-  touchNoiseMul: 1, returnTouchMul: 1,
+  touchNoiseMul: 1, returnTouchMul: 1, clutchRecoveryMul: 1, pressureDrainMul: 1,
 }

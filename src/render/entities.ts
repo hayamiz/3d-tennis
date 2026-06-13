@@ -5,10 +5,14 @@
 // プレイヤー/AI: 頭・胴体・腰・両腕(上腕+前腕)・両脚を持つローポリ人型。
 //        利き手(右)にラケット。フォア/バックの振り分け・チャージテイクバック・走り footwork。
 //        ペルソナの体格・外見・チームカラーでパラメータ化(IMPROVEMENTS §3.6-3.7)。
+//        発汗パーティクル + 疲労サイン(IMPROVEMENTS §5.8(B))。
 // =============================================================================
 import * as THREE from 'three'
 import type { WorldView, PlayerView, Side, PersonaPhysique, PersonaAppearance } from '../types'
-import { BALL_RADIUS, BALL_VISUAL_SCALE, CHARGE_MAX, BASE_HEIGHT_M, TEAM_PALETTE } from '../constants'
+import {
+  BALL_RADIUS, BALL_VISUAL_SCALE, CHARGE_MAX, BASE_HEIGHT_M, TEAM_PALETTE,
+  STAMINA_SWEAT_START, STAMINA_SWEAT_MAX_RATE,
+} from '../constants'
 
 // ボール描画半径(視認性のため実寸より大きく描く)
 const BALL_DRAW_RADIUS = BALL_RADIUS * BALL_VISUAL_SCALE
@@ -307,6 +311,32 @@ function makeRadialTexture(colorHex: number): THREE.Texture {
 }
 
 // ---------------------------------------------------------------------------
+// 発汗パーティクル定数(IMPROVEMENTS §5.8(B))
+// ---------------------------------------------------------------------------
+/** 発汗滴プールの最大数。高い pct のときは大半が非アクティブ */
+const SWEAT_POOL_SIZE = 24
+/** 滴1粒の最大生存時間(秒)。重力で落ちながらフェード */
+const SWEAT_DROP_LIFETIME = 0.55
+/** 重力加速度(滴にだけ効く。通常重力より少し弱く "水滴が飛ぶ" 感) */
+const SWEAT_GRAVITY = 6.5
+/** 放出時の初速(m/s)の乱数範囲。頭・肩から外側へ散らす */
+const SWEAT_INIT_SPEED = 0.9
+
+/** 汗滴1粒の状態 */
+interface SweatDrop {
+  mesh: THREE.Mesh
+  active: boolean
+  /** 現在位置(ワールド座標) */
+  pos: THREE.Vector3
+  /** 速度(ワールド座標) */
+  vel: THREE.Vector3
+  /** 残り生存時間(秒) */
+  life: number
+  /** 最大生存時間(初期化時に設定) */
+  maxLife: number
+}
+
+// ---------------------------------------------------------------------------
 // CharacterEntity 構築用オプション型
 // ---------------------------------------------------------------------------
 export interface CharacterEntityOptions {
@@ -356,6 +386,28 @@ export class CharacterEntity {
   private whiffAngle = 0
   private footCycle = 0 // 走りモーションの位相
   private chargeShake = 0 // オーバーチャージの震え位相
+
+  // ---------------------------------------------------------------------------
+  // 発汗エミッタ(IMPROVEMENTS §5.8(B))
+  // ---------------------------------------------------------------------------
+  /** 汗滴1粒の状態(プール) */
+  private sweatDrops: SweatDrop[] = []
+  /** 汗滴の共有ジオメトリ(コンストラクタで1回生成) */
+  private readonly sweatGeo: THREE.SphereGeometry
+  /** 汗滴の共有マテリアル(加算合成。コンストラクタで1回生成) */
+  private readonly sweatMat: THREE.MeshBasicMaterial
+  /** 発汗タイマー: 次の放出までの残り秒数 */
+  private sweatTimer = 0
+  /** 疲労呼吸位相(胴体上下脈動) */
+  private breathPhase = 0
+  /** キャラの肩高さ(発汗放出位置の計算用。コンストラクタで設定) */
+  private readonly shoulderWorldY: number
+  /** キャラの頭頂高さ(発汗放出位置の計算用) */
+  private readonly headTopWorldY: number
+  /** 体格に応じた肩幅オフセット(発汗放出位置の計算用) */
+  private readonly shoulderWorldX: number
+  /** 胴体の初期 y 位置(呼吸脈動の基準値) */
+  private readonly torsoBaseY: number
 
   constructor(scene: THREE.Scene, opts: CharacterEntityOptions) {
     this.group = new THREE.Group()
@@ -484,6 +536,43 @@ export class CharacterEntity {
     if (opts.physique.handedness === 'left') {
       this.group.rotation.y = Math.PI
     }
+
+    // -------------------------------------------------------------------------
+    // 発汗エミッタ用の共有ジオメトリ/マテリアルを1回だけ生成。
+    // 小さな球体(半径 0.018m)を加算合成の半透明で水色に。
+    // -------------------------------------------------------------------------
+    this.sweatGeo = new THREE.SphereGeometry(0.018, 5, 4)
+    this.sweatMat = new THREE.MeshBasicMaterial({
+      color: 0x88ccff,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+
+    // 汗滴プールを事前確保(最大 SWEAT_POOL_SIZE 個)
+    for (let i = 0; i < SWEAT_POOL_SIZE; i++) {
+      const mesh = new THREE.Mesh(this.sweatGeo, this.sweatMat)
+      mesh.visible = false
+      mesh.renderOrder = 5
+      scene.add(mesh)
+      this.sweatDrops.push({
+        mesh,
+        active: false,
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        life: 0,
+        maxLife: 0,
+      })
+    }
+
+    // 発汗放出位置の計算に使う高さ・幅を記録(ワールド座標 = group.position.y + ローカル高さ)
+    // ここでは group は y=0 に置かれるので、ローカル高さがそのまま使える。
+    this.shoulderWorldY = shoulderY
+    this.headTopWorldY  = shoulderY + neckH + headR * 2.0
+    this.shoulderWorldX = shoulderX
+    // 胴体の初期 y(呼吸脈動の基準)
+    this.torsoBaseY = this.torso.position.y
   }
 
   // ---------------------------------------------------------------------------
@@ -688,7 +777,7 @@ export class CharacterEntity {
     pivot.add(face)
   }
 
-  /** 毎フレーム呼ぶ。位置・向き・スイング・走りを更新 */
+  /** 毎フレーム呼ぶ。位置・向き・スイング・走り・発汗/疲労を更新 */
   update(dt: number, view: PlayerView): void {
     // キャラクター位置
     this.group.position.set(view.pos.x, 0, view.pos.z)
@@ -714,6 +803,10 @@ export class CharacterEntity {
     this.updateSwingState(view)
     this.updateLegs(dt, speed, view)
     this.updateArms(dt, view)
+
+    // 発汗エフェクト・疲労サイン(スタミナ pct による。pct=1 では何もしない)
+    this.updateSweat(dt, view)
+    this.updateFatiguePose(dt, view)
   }
 
   /** スイング状態の遷移管理 */
@@ -889,8 +982,158 @@ export class CharacterEntity {
     }
   }
 
-  /** シーンから除去 */
+  /** シーンから除去(発汗プールのメッシュも含む) */
   dispose(scene: THREE.Scene): void {
     scene.remove(this.group)
+    for (const drop of this.sweatDrops) {
+      scene.remove(drop.mesh)
+    }
+    this.sweatDrops = []
+  }
+
+  // ---------------------------------------------------------------------------
+  // 発汗エミッタ(IMPROVEMENTS §5.8(B))
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 発汗パーティクルを更新する。
+   * - pct < STAMINA_SWEAT_START のとき放出を開始し、pct が低いほど放出レートを増やす。
+   * - 既存の滴を重力で落としながらフェードアウトさせる。
+   * - pct = 1(満タン)では放出しない。
+   */
+  private updateSweat(dt: number, view: PlayerView): void {
+    const pct = view.staminaPct
+
+    // 既存の滴の物理更新(重力 + フェード)
+    for (const drop of this.sweatDrops) {
+      if (!drop.active) continue
+      drop.vel.y -= SWEAT_GRAVITY * dt
+      drop.pos.addScaledVector(drop.vel, dt)
+      drop.life -= dt
+      if (drop.life <= 0) {
+        drop.active = false
+        drop.mesh.visible = false
+        continue
+      }
+      const alpha = drop.life / drop.maxLife
+      drop.mesh.position.copy(drop.pos)
+      // スケールは生存中盤まで保ち、末期に縮む
+      const s = Math.min(1.0, alpha * 3.0) * (0.5 + 0.5 * alpha)
+      drop.mesh.scale.setScalar(s)
+      drop.mesh.visible = true
+    }
+
+    // pct が満タン(1.0)か、発汗閾値以上ならここで終了(放出なし)
+    if (pct >= STAMINA_SWEAT_START || pct >= 1.0) return
+
+    // 放出レートを計算: pct→0 で STAMINA_SWEAT_MAX_RATE、pct=SWEAT_START で 0
+    const t = 1.0 - pct / STAMINA_SWEAT_START // 0(閾値直前)→1(枯渇)
+    const rate = STAMINA_SWEAT_MAX_RATE * t * t // 二乗でゆっくり増やす
+
+    this.sweatTimer -= dt
+    if (this.sweatTimer > 0) return
+
+    // 次の放出インターバルを設定
+    const interval = rate > 0 ? 1.0 / rate : 999
+    this.sweatTimer = interval + (Math.random() - 0.5) * interval * 0.4
+
+    // フリーの滴を取得して放出
+    const drop = this.getFreeSweatDrop()
+    if (!drop) return
+
+    // 放出位置: 頭/肩をランダムに選ぶ。ワールド座標 = group.position + ローカルオフセット
+    const gp = this.group.position
+    const emitHead = Math.random() < 0.5
+    if (emitHead) {
+      // 頭頂付近(±小さいオフセット)
+      drop.pos.set(
+        gp.x + (Math.random() - 0.5) * 0.1,
+        this.headTopWorldY * 0.9,
+        gp.z + (Math.random() - 0.5) * 0.1,
+      )
+    } else {
+      // 肩付近(左右どちらか)
+      const side = Math.random() < 0.5 ? 1 : -1
+      drop.pos.set(
+        gp.x + side * this.shoulderWorldX * (0.8 + Math.random() * 0.4),
+        this.shoulderWorldY * (0.95 + Math.random() * 0.1),
+        gp.z + (Math.random() - 0.5) * 0.15,
+      )
+    }
+
+    // 初速: 外方向 + 小さなランダム成分
+    const spreadX = (Math.random() - 0.5) * SWEAT_INIT_SPEED
+    const spreadZ = (Math.random() - 0.5) * SWEAT_INIT_SPEED
+    const upY     = 0.2 + Math.random() * 0.5
+    drop.vel.set(spreadX, upY, spreadZ)
+
+    drop.maxLife = SWEAT_DROP_LIFETIME * (0.7 + Math.random() * 0.6)
+    drop.life    = drop.maxLife
+    drop.active  = true
+    drop.mesh.position.copy(drop.pos)
+    drop.mesh.scale.setScalar(1.0)
+    drop.mesh.visible = true
+  }
+
+  /** フリーの汗滴インスタンスを返す。全部アクティブなら最古を再利用 */
+  private getFreeSweatDrop(): SweatDrop | null {
+    for (const d of this.sweatDrops) {
+      if (!d.active) return d
+    }
+    // プール満杯: 最古(残り life が最小)を再利用
+    let oldest: SweatDrop | null = null
+    let minLife = Infinity
+    for (const d of this.sweatDrops) {
+      if (d.life < minLife) {
+        minLife = d.life
+        oldest = d
+      }
+    }
+    return oldest
+  }
+
+  // ---------------------------------------------------------------------------
+  // 疲労サイン(呼吸上下脈動 + 前傾姿勢, IMPROVEMENTS §5.8(B) 補助的な疲労サイン)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 低スタミナ時の疲労ポーズを駆動する。
+   * - pct < STAMINA_SWEAT_START(0.45): 胴体をゆっくり上下に脈動(呼吸)。
+   * - pct < 0.25: さらに前傾(やや猫背ぎみに)。
+   * - pct >= 1.0(満タン): 何もしない(従来と同じ見た目を保証)。
+   * - スイング/チャージ中は既存アニメを壊さないよう疲労ポーズ量を抑制。
+   */
+  private updateFatiguePose(dt: number, view: PlayerView): void {
+    const pct = view.staminaPct
+    if (pct >= 1.0) return // 満タンでは何もしない
+
+    // 疲労度(0=閾値、1=完全枯渇)。発汗閾値より少し緩く(0.55から効き始める)
+    const FATIGUE_START = 0.55
+    if (pct >= FATIGUE_START) return
+
+    const fatigue = 1.0 - pct / FATIGUE_START // 0..1
+
+    // スイング/チャージ中は疲労ポーズを 30% に抑制して既存アニメを壊さない
+    const suppress = (view.charging || view.swing === 'swing') ? 0.3 : 1.0
+
+    // 呼吸上下(胴体を y 方向に脈動。torsoBaseY を基準に上下させる)
+    this.breathPhase += dt * (0.8 + fatigue * 1.5) // 疲れるほど呼吸が速くなる
+    const breathAmt = fatigue * 0.025 * suppress
+    this.torso.position.y = this.torsoBaseY +
+      Math.sin(this.breathPhase * 2.0 * Math.PI) * breathAmt
+
+    // 低スタミナ時の前傾(腰が下がる感じ)
+    if (fatigue > 0.4) {
+      const sag = (fatigue - 0.4) / 0.6 // 0..1
+      const forwardLean = sag * 0.08 * suppress
+      this.torso.rotation.x = THREE.MathUtils.lerp(
+        this.torso.rotation.x,
+        forwardLean,
+        5 * dt,
+      )
+    } else {
+      // 閾値以下では通常姿勢へ戻す
+      this.torso.rotation.x = THREE.MathUtils.lerp(this.torso.rotation.x, 0, 5 * dt)
+    }
   }
 }

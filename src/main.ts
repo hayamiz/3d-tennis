@@ -97,8 +97,8 @@ let config: MatchConfig = {
   opponentPersona: 'jokovin',
 }
 // 各サイドのペルソナ倍率(startMatch で確定)。サーブ倍率・打点高に使う。
-let playerMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.federun.ratings)
-let opponentMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.jokovin.ratings)
+let playerMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.federun.ratings, PLAYER_PERSONAS.federun.mental)
+let opponentMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.jokovin.ratings, PLAYER_PERSONAS.jokovin.mental)
 let score: MatchScore
 let playerCtrl: Controller
 let aiCtrl: Controller
@@ -212,11 +212,44 @@ function makeContext(self: Side): ControlContext {
     get serveNumber() {
       return serveNumber
     },
+    get pressure() {
+      return currentPressure
+    },
     predictLanding: () => ballSim.predictLanding(),
     requestShot: (req: ShotRequest) => handleShot(req),
     requestServe: (power, aimX, serveType) => handleServe(self, power, aimX, serveType),
     logDebug: (e) => pushLog(self === 'opponent' ? 'AI' : 'P', e.kind, e.msg, e.data),
   }
+}
+
+// ---------------------------------------------------------------------------
+// プレッシャー値の算出(GAME_DESIGN §6 / IMPROVEMENTS §5.5)
+// スコア状況からその局面の「重圧」0..1 を求める。両者に同じ値を注入し、
+// 各ペルソナの mental(pressureDrainMul)が反応の差を生む。
+// ---------------------------------------------------------------------------
+let currentPressure = 0
+const POINT_RANK: Record<string, number> = { '0': 0, '15': 1, '30': 2, '40': 3, Ad: 4 }
+
+function computePressure(): number {
+  if (!score) return 0
+  const sv = score.view
+  const pP = POINT_RANK[sv.points.player] ?? 0
+  const pO = POINT_RANK[sv.points.opponent] ?? 0
+  // ゲームポイント(次の1点でゲームを取れる側)
+  const gpPlayer = pP === 4 || (pP === 3 && pO < 3)
+  const gpOpp = pO === 4 || (pO === 3 && pP < 3)
+  if (gpPlayer || gpOpp) {
+    const winner: Side = gpPlayer ? 'player' : 'opponent'
+    // このゲームを取るとマッチ決着ならマッチポイント = 最大の重圧
+    const matchPoint = sv.games[winner] + 1 >= config.gamesToWin
+    if (matchPoint) return 1.0
+    // ブレークポイント(レシーバーのゲームポイント)はやや重い
+    const isBreak = winner !== sv.server
+    return isBreak ? 0.8 : 0.7
+  }
+  if (pP >= 3 && pO >= 3) return 0.4 // デュース(40-40)
+  if (pP === 2 && pO === 2) return 0.25 // 30-30 の競り
+  return 0
 }
 
 const ctxPlayer = makeContext('player')
@@ -398,8 +431,8 @@ function startMatch(cfg: MatchConfig): void {
   // ペルソナ倍率・身体を算出して各モジュールへ注入(docs/ARCHITECTURE.md §6.5)
   const playerPersona = PLAYER_PERSONAS[cfg.playerPersona]
   const opponentPersona = PLAYER_PERSONAS[cfg.opponentPersona]
-  playerMods = personaModifiers(playerPersona.ratings)
-  opponentMods = personaModifiers(opponentPersona.ratings)
+  playerMods = personaModifiers(playerPersona.ratings, playerPersona.mental)
+  opponentMods = personaModifiers(opponentPersona.ratings, opponentPersona.mental)
   playerCtrl = new PlayerController(sharedInput, playerMods, playerPersona.physique)
   aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique)
   // 3Dモデルをペルソナの体格・外見・チームカラーで再構成
@@ -467,6 +500,9 @@ function physicsStep(): void {
 
   // ポイント中(serve / rally)の経過時間(デバッグログのタイムスタンプ用)
   if (phase === 'serve' || phase === 'rally') pointClock += PHYS_DT
+
+  // この局面のプレッシャーを更新(コントローラのスタミナ/メンタル計算に注入)
+  currentPressure = computePressure()
 
   playerCtrl.update(PHYS_DT, ctxPlayer)
   aiCtrl.update(PHYS_DT, ctxOpponent)
@@ -541,16 +577,24 @@ function frame(now: number): void {
       head.y += 2.0
       serveLabelScreen = renderer.worldToScreen(head)
     }
+    // スタミナ円形ゲージ用: 両キャラ頭上のスクリーン座標(IMPROVEMENTS §5.8)
+    const ov = aiCtrl.view
+    const playerHead = pv.pos.clone(); playerHead.y += 2.3
+    const opponentHead = ov.pos.clone(); opponentHead.y += 2.3
     const hud: HudView = {
       score: score.view,
       playerStamina: pv.stamina,
-      opponentStamina: aiCtrl.view.stamina,
+      opponentStamina: ov.stamina,
       serveMeter: playerCtrl.serveMeter,
       serveNumber,
       phase,
       banner,
       charge: pv.charging ? { value: pv.charge, overcharged: pv.charge > 1 } : null,
       serveLabelScreen,
+      playerStaminaPct: pv.staminaPct,
+      opponentStaminaPct: ov.staminaPct,
+      playerStaminaScreen: renderer.worldToScreen(playerHead),
+      opponentStaminaScreen: renderer.worldToScreen(opponentHead),
     }
     ui.updateHud(hud)
   }
@@ -565,6 +609,7 @@ function dummyView(side: Side): PlayerView {
     pos: new Vector3(0, 0, sideSign(side) * (COURT_HALF_LENGTH + 1)),
     vel: new Vector3(),
     stamina: STAMINA_MAX,
+    staminaPct: 1,
     sprinting: false,
     swing: 'idle',
     lastShot: null,

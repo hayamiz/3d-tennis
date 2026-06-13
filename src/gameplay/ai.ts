@@ -51,8 +51,11 @@ import {
   STAMINA_LOW_THRESHOLD,
   STAMINA_MAX,
   STAMINA_QUALITY_FLOOR,
-  STAMINA_REGEN,
-  STAMINA_SPRINT_DRAIN,
+  STAMINA_REGEN_IDLE,
+  STAMINA_MOVE_DRAIN_K,
+  STAMINA_SPRINT_EXTRA,
+  STAMINA_POINT_RECOVERY,
+  shotStaminaCost,
   SWEET_DIST,
   SWING_LOCK_MOVE_FACTOR,
   SWING_LOCK_TIME,
@@ -169,6 +172,7 @@ export class AIController implements Controller {
       pos: this.pos,
       vel: this.vel,
       stamina: this.stamina,
+      staminaPct: this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0,
       sprinting: this.sprinting,
       swing: this.swingState,
       lastShot: this.lastShot,
@@ -182,6 +186,7 @@ export class AIController implements Controller {
   get view(): PlayerView {
     // 値型フィールドはビューに同期
     this._view.stamina = this.stamina
+    this._view.staminaPct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
     this._view.sprinting = this.sprinting
     this._view.swing = this.swingState
     this._view.lastShot = this.lastShot
@@ -203,6 +208,13 @@ export class AIController implements Controller {
     const sign = sideSign(this.side) // opponent => -1
     const amServing = servingSide === this.side
     this.servingFromRight = serveFromRight
+
+    // スタミナ回復(ポイント間)。回復量にクラッチ回復倍率を反映。上限は effStaminaMax。
+    this.stamina = clamp(
+      this.stamina + STAMINA_POINT_RECOVERY * this.mods.clutchRecoveryMul,
+      0,
+      this.effStaminaMax,
+    )
 
     // サーブ位置はポイント合計の偶奇で決まるが、ここでは serveFromRight を
     // サーバー視点の左右として受け取る。AI(奥側)から見た右はプレイヤーの左。
@@ -307,15 +319,17 @@ export class AIController implements Controller {
 
     if (ctx.phase === 'serve') {
       this.updateServe(dt, ctx)
-      // サーブ前は定位置で待機(移動しない)
-      this.applyStaminaIdle(dt)
+      // サーブ前は移動目標に応じて動く(positionForReturn 内で moveToward)。
+      // ここでは現在の速度を元にスタミナを加算モデルで更新する。
+      this.updateStamina(dt, this.sprinting, ctx.pressure)
       return
     }
 
     if (ctx.phase !== 'rally') {
-      // pointOver / menu / matchOver 中は静止し回復のみ
+      // pointOver / menu / matchOver 中は静止
       this.vel.set(0, 0, 0)
-      this.applyStaminaIdle(dt)
+      this.sprinting = false
+      this.updateStamina(dt, false, ctx.pressure)
       return
     }
 
@@ -324,6 +338,7 @@ export class AIController implements Controller {
     this.updateLeaveDecision(ctx)
     this.decideTarget(ctx)
     this.moveToward(dt)
+    this.updateStamina(dt, this.sprinting, ctx.pressure)
     this.tryHit(ctx)
   }
 
@@ -579,7 +594,6 @@ export class AIController implements Controller {
       if (this.vel.lengthSq() < 0.01) this.vel.set(0, 0, 0)
       this.sprinting = false
       this.integrate(dt)
-      this.applyStaminaIdle(dt)
       return
     }
 
@@ -621,21 +635,7 @@ export class AIController implements Controller {
     }
 
     this.integrate(dt)
-
-    // スタミナ更新(消耗・回復・上限にペルソナ倍率を反映)
-    if (wantSprint) {
-      this.stamina = clamp(
-        this.stamina - STAMINA_SPRINT_DRAIN * this.mods.staminaDrainMul * dt,
-        0,
-        this.effStaminaMax,
-      )
-    } else {
-      this.stamina = clamp(
-        this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt,
-        0,
-        this.effStaminaMax,
-      )
-    }
+    // スタミナは update() で一括して加算モデル(updateStamina)で更新する。
   }
 
   /** 位置積分 + 可動域クランプ */
@@ -650,14 +650,28 @@ export class AIController implements Controller {
     this.pos.y = 0
   }
 
-  /** 非スプリント時のスタミナ回復のみ(静止フレーム用) */
-  private applyStaminaIdle(dt: number): void {
-    this.stamina = clamp(
-      this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt,
-      0,
-      this.effStaminaMax,
-    )
-    this.sprinting = false
+  /**
+   * 消費倍率 driveMul を返す(IMPROVEMENTS §5.2/5.5)。
+   * driveMul = staminaDrainMul · (1 + (pressureDrainMul − 1)·pressure)
+   */
+  private driveMul(pressure: number): number {
+    const p = clamp(pressure, 0, 1)
+    return this.mods.staminaDrainMul * (1 + (this.mods.pressureDrainMul - 1) * p)
+  }
+
+  /**
+   * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
+   * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
+   *             − STAMINA_MOVE_DRAIN_K·speed·driveMul
+   *             − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+   * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
+   */
+  private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
+    const speed = Math.hypot(this.vel.x, this.vel.z)
+    const drive = this.driveMul(pressure)
+    const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
+    const drain = (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) * drive
+    this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, this.effStaminaMax)
   }
 
   // -------------------------------------------------------------------------
@@ -706,6 +720,17 @@ export class AIController implements Controller {
       },
     })
     ctx.requestShot(req)
+
+    // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
+    // スマッシュ判定は shot.ts と同条件: flat かつ 打点高 ≥ SMASH_MIN_HEIGHT かつ
+    // ネットからの距離 |hitPos.z| ≤ SMASH_MAX_DEPTH。
+    // AI はチャージ演出がないため charge は 0 を渡す。
+    const isSmash =
+      req.type === 'flat' &&
+      bpos.y >= SMASH_MIN_HEIGHT &&
+      Math.abs(bpos.z) <= SMASH_MAX_DEPTH
+    const cost = shotStaminaCost(req.type, 0, isSmash) * this.driveMul(ctx.pressure)
+    this.stamina = Math.max(0, this.stamina - cost)
 
     this.lastShot = req.type
 

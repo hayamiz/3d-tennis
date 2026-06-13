@@ -67,6 +67,11 @@ export interface Persona {
   ratings: PersonaRatings
   physique: PersonaPhysique
   appearance: PersonaAppearance
+  /**
+   * 精神力(隠しパラメータ 1..5)。レーダー(ratings)には出さない。
+   * プレッシャー耐性とクラッチ回復を担う(docs/GAME_DESIGN.md §6 / §12.4)。
+   */
+  mental: number
 }
 
 /**
@@ -95,6 +100,11 @@ export interface PersonaModifiers {
   // 技巧
   touchNoiseMul: number
   returnTouchMul: number
+  // 精神力(隠し mental 由来。docs/GAME_DESIGN.md §6)
+  /** 基礎回復・ポイント間回復への倍率(勝負強い=回復が速い) */
+  clutchRecoveryMul: number
+  /** プレッシャー時の消費倍率(高 mental は p が高いほど消費減、低 mental は増) */
+  pressureDrainMul: number
 }
 
 export type GamePhase = 'menu' | 'serve' | 'rally' | 'pointOver' | 'matchOver'
@@ -194,6 +204,8 @@ export interface PlayerView {
   swing: SwingState
   /** 直近に選んだショット(描画・音用) */
   lastShot: ShotType | null
+  /** 正規化スタミナ残量 0..1(= stamina / effStaminaMax)。ゲージ色・発汗の判定用 */
+  staminaPct: number
   /** チャージ中か(ショットキー長押し)。AI は常に false でよい */
   charging: boolean
   /** チャージ量 0..CHARGE_MAX。非チャージ時は 0 */
@@ -232,6 +244,8 @@ export interface ControlContext {
   serveNumber: 1 | 2
   /** AI の判断ログ出力(デバッグ用、任意)。実装側は省略可・null チェックして呼ぶ */
   logDebug?: (e: AIDebugEvent) => void
+  /** 現在のプレッシャー 0..1(ブレーク/ゲーム/マッチポイント等。docs/GAME_DESIGN.md §6) */
+  pressure: number
 }
 
 /**
@@ -428,6 +442,12 @@ export interface HudView {
   banner: string | null
   /** プレイヤーのチャージ状態(非チャージ時 null)。HUD のチャージバー用 */
   charge: { value: number; overcharged: boolean } | null
+  /** スタミナ正規化残量 0..1(円形ゲージの塗り・色用) */
+  playerStaminaPct: number
+  opponentStaminaPct: number
+  /** 各キャラ頭上のスクリーン座標(円形ゲージの追従用。投影不可なら null) */
+  playerStaminaScreen: { x: number; y: number } | null
+  opponentStaminaScreen: { x: number; y: number } | null
   /**
    * サーブ種類ラベルを表示するキャンバス上の座標(CSS px)。
    * サーブフェーズでプレイヤーの頭上に表示するため main が投影して設定する。

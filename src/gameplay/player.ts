@@ -24,8 +24,9 @@ import {
   MOVE_Z_MIN,
   MOVE_Z_MAX,
   STAMINA_MAX,
-  STAMINA_SPRINT_DRAIN,
-  STAMINA_REGEN,
+  STAMINA_REGEN_IDLE,
+  STAMINA_MOVE_DRAIN_K,
+  STAMINA_SPRINT_EXTRA,
   STAMINA_POINT_RECOVERY,
   STAMINA_LOW_THRESHOLD,
   STAMINA_QUALITY_FLOOR,
@@ -35,6 +36,9 @@ import {
   QUALITY_MIN,
   SPRINT_SHOT_PENALTY,
   SHOT_PARAMS,
+  SMASH_MIN_HEIGHT,
+  SMASH_MAX_DEPTH,
+  shotStaminaCost,
   AIM_OFFSET_X,
   AIM_OFFSET_Z,
   TARGET_CLAMP_MARGIN,
@@ -144,6 +148,7 @@ export class PlayerController implements Controller {
     pos: this.pos.clone(),
     vel: this.vel.clone(),
     stamina: STAMINA_MAX,
+    staminaPct: 1,
     sprinting: false,
     swing: 'idle',
     lastShot: null,
@@ -193,8 +198,11 @@ export class PlayerController implements Controller {
   }
 
   resetForPoint(servingSide: Side, serveFromRight: boolean): void {
-    // スタミナ回復(上限はペルソナ補正済みの effStaminaMax)
-    this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_POINT_RECOVERY)
+    // スタミナ回復(ポイント間)。回復量にクラッチ回復倍率を反映。上限は effStaminaMax。
+    this.stamina = Math.min(
+      this.effStaminaMax,
+      this.stamina + STAMINA_POINT_RECOVERY * this.mods.clutchRecoveryMul,
+    )
 
     // サーブサイドを保持(サーブ移動のクランプに使用)
     this.serveFromRight = serveFromRight
@@ -256,8 +264,9 @@ export class PlayerController implements Controller {
       this.applyMovement(dt, inp, false)
     }
 
-    // スタミナ更新
-    this.updateStamina(dt, inp.sprint && this.isActuallyMoving())
+    // スタミナ更新(常時微回復 − 移動量比例消費 − スプリント追加消費。
+    // プレッシャー(ctx.pressure)で消費倍率が変動する。IMPROVEMENTS §5.2/5.5)
+    this.updateStamina(dt, inp.sprint && this.isActuallyMoving(), ctx.pressure)
 
     // ビュー更新
     this.refreshView(inp.sprint && this.stamina > 0 && this.isActuallyMoving())
@@ -543,6 +552,16 @@ export class PlayerController implements Controller {
       mods: this.mods,
     })
 
+    // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
+    // スマッシュ判定は shot.ts と同条件: flat かつ 打点高 ≥ SMASH_MIN_HEIGHT かつ
+    // ネットからの距離 |hitPos.z| ≤ SMASH_MAX_DEPTH。
+    const isSmash =
+      shotType === 'flat' &&
+      ball.pos.y >= SMASH_MIN_HEIGHT &&
+      Math.abs(ball.pos.z) <= SMASH_MAX_DEPTH
+    const cost = shotStaminaCost(shotType, this.charge, isSmash) * this.driveMul(ctx.pressure)
+    this.stamina = Math.max(0, this.stamina - cost)
+
     // swingSide: 打点(ボール)がプレイヤーから見て利き手側(右利きの player は
     // 世界 +x 側)なら 'fore'、逆なら 'back'。左利きは不等号を反転する。
     const ballOnRight = ball.pos.x >= this.pos.x
@@ -648,14 +667,32 @@ export class PlayerController implements Controller {
   // スタミナ更新
   // ---------------------------------------------------------------------------
 
-  private updateStamina(dt: number, sprinting: boolean): void {
-    if (sprinting) {
-      // 消耗にペルソナ倍率 staminaDrainMul を乗算
-      this.stamina = Math.max(0, this.stamina - STAMINA_SPRINT_DRAIN * this.mods.staminaDrainMul * dt)
-    } else {
-      // 回復にペルソナ倍率 staminaRegenMul を乗算。上限は effStaminaMax
-      this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt)
-    }
+  /**
+   * 消費倍率 driveMul を返す(IMPROVEMENTS §5.2/5.5)。
+   * driveMul = staminaDrainMul · (1 + (pressureDrainMul − 1)·pressure)
+   * 移動・スプリント・打球コストの消費すべてに乗算する。
+   */
+  private driveMul(pressure: number): number {
+    const p = Math.max(0, Math.min(1, pressure))
+    return this.mods.staminaDrainMul * (1 + (this.mods.pressureDrainMul - 1) * p)
+  }
+
+  /**
+   * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
+   * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
+   *             − STAMINA_MOVE_DRAIN_K·speed·driveMul
+   *             − STAMINA_SPRINT_EXTRA·[sprinting]·driveMul
+   * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
+   */
+  private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
+    const speed = Math.sqrt(this.vel.x * this.vel.x + this.vel.z * this.vel.z)
+    const drive = this.driveMul(pressure)
+    // 基礎回復(クラッチ回復ボーナス込み)
+    const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
+    // 移動量比例消費 + スプリント追加消費
+    const drain = (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) * drive
+    const next = this.stamina + (regen - drain) * dt
+    this.stamina = Math.max(0, Math.min(this.effStaminaMax, next))
   }
 
   // ---------------------------------------------------------------------------
@@ -713,6 +750,7 @@ export class PlayerController implements Controller {
       pos: this.pos.clone(),
       vel: this.vel.clone(),
       stamina: this.stamina,
+      staminaPct: this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0,
       sprinting,
       swing: this.swingState,
       lastShot: this.lastShot,
