@@ -28,6 +28,7 @@ import {
   BASE_HEIGHT_M,
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
+  MISHIT_ACTIVE_EPS,
   MOMENTUM_FULL_STREAK,
   NET_POINT_Z,
   OPEN_COURT_MIN_OFFSET,
@@ -321,9 +322,13 @@ function handleShot(req: ShotRequest): void {
   dbg(`shot ${req.hitter} ${req.type} q=${req.quality.toFixed(2)} hit=${fmt(req.hitPos)} target=${fmt(req.target)}`)
   ballSim.launch(req.hitPos.clone(), sol.vel, sol.spin, req.hitter)
   renderer.sceneApi.spawnHitFx(req.hitPos.clone())
-  const sfxName =
-    req.type === 'flat' ? 'hit_flat' : req.type === 'slice' || req.type === 'drop' ? 'hit_slice' : 'hit_spin'
-  sfx.play(sfxName, { intensity: req.quality })
+  // 打球音(§7): ショット種別ごとに音色を作り分け、球威(quality)で明るさを、
+  // 打点 x でステレオ定位を決める。差し込まれ(山なり化)は鈍い "コツッ" に。
+  sfx.playHit(req.type, {
+    intensity: req.quality,
+    panX: Math.max(-1, Math.min(1, req.hitPos.x / COURT_HALF_WIDTH)),
+    mishit: (sol.mishit ?? 0) > MISHIT_ACTIVE_EPS,
+  })
   judge.onEvent({ kind: 'hit', by: req.hitter, shot: req.type }, ballSim.state)
 }
 
@@ -380,7 +385,12 @@ function handleServe(
     if (landIn) stats.firstServeIn[server]++
   }
   pointShots++
-  sfx.play('serve', { intensity: power })
+  // サーブ音(§7.4): フラットを増強した最も重く速い一撃。
+  sfx.playHit('flat', {
+    intensity: power,
+    panX: Math.max(-1, Math.min(1, hitPos.x / COURT_HALF_WIDTH)),
+    serve: true,
+  })
   renderer.sceneApi.spawnHitFx(hitPos.clone())
   phase = 'rally'
 }

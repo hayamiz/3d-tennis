@@ -194,6 +194,12 @@ export interface ShotRequest {
 export interface ShotSolution {
   vel: Vector3
   spin: Vector3
+  /**
+   * 差し込まれ度合い 0..1(docs/GAME_DESIGN.md §4.6)。速球を芯で捉えられず山なりの
+   * 弱い返球になった度合い。打球音の「詰まった/シャンク」表現に使う(IMPROVEMENTS §7.5)。
+   * 省略時は 0(クリーンヒット)。サーブ/ドライブ等では設定しない。
+   */
+  mishit?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -506,13 +512,11 @@ export interface UIHandlers {
 // オーディオ
 // ---------------------------------------------------------------------------
 
+// 打球音(ヒット/サーブ)は Sfx.playHit() に集約(IMPROVEMENTS §7.4)。
+// SfxName は打球以外のワンショット効果音のみを列挙する。
 export type SfxName =
-  | 'hit_flat'
-  | 'hit_spin'
-  | 'hit_slice'
   | 'bounce'
   | 'net'
-  | 'serve'
   | 'point'
   | 'applause'
   | 'ui'

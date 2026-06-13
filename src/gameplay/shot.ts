@@ -421,7 +421,7 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // 差し込まれ時(mishit > EPS)は、flat も含めて山なりの収束経路で返す
   // (ドライブではなく floatSpeed/floatApex の弱い sitter)。
   if (mishit > MISHIT_ACTIVE_EPS) {
-    return solveToTarget(
+    const sol = solveToTarget(
       req.hitPos,
       target,
       floatSpeed,
@@ -431,6 +431,7 @@ export function solveShot(req: ShotRequest): ShotSolution {
       req.hitter,
       req.type,
     )
+    return { ...sol, mishit }
   }
 
   // フラットは速度優先(ドライブ)ソルバで打つ。speed(高打点ゲイン・球威

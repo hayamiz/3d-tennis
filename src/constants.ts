@@ -614,3 +614,60 @@ export const VOLLEY_SPEED_CAP = 26
 export const VOLLEY_AIM_MUL = 0.6
 /** ボレー時のチャージ威力寄与の倍率(溜めても効きにくい) */
 export const VOLLEY_CHARGE_MUL = 0.4
+
+// ---------------------------------------------------------------------------
+// 打球音(SE)の合成パラメータ — docs/IMPROVEMENTS.md §7 / GAME_DESIGN.md §10
+// 実打球音の音像「鋭いアタック(クリック)+ 短く高めの共鳴(パコッ)+ ごく短い余韻」を
+// パラメトリックに描き分ける。`audio/sfx.ts` の playHit() がこの表を参照して合成する。
+// 設計方針(§7.5): 強打ほど "明るく鋭く"(共鳴/明るさのカットオフを上げる)。
+// ---------------------------------------------------------------------------
+
+/** 1 ショット種の打球音を決めるパラメータ */
+export interface HitSoundParams {
+  /** 共鳴ボディの中心周波数(Hz)。"パコッ" の音程感(§7.4) */
+  resonanceHz: number
+  /** 共鳴の Q(高いほど締まった澄んだ音。スイートスポット感) */
+  q: number
+  /** アタック(クリック)トランジェントの量 0..1。クリスプ感の核 */
+  transient: number
+  /** 擦過/ブラシノイズ成分の量 0..1(スピンの擦り、スライスの切り) */
+  noise: number
+  /** 余韻(指数減衰時間, 秒)。30〜100ms 程度 */
+  decay: number
+  /** 基準音量 0..1(マスターゲイン前) */
+  gain: number
+  /** ノイズ/ピッチのスイープ方向: +1=上昇(スピンの擦り上げ), -1=下降(スライスの切り), 0=なし */
+  sweep: number
+}
+
+/**
+ * ショット種別ごとの打球音パラメータ(§7.4)。
+ * フラット=最も鋭い「パッコーン」、トップスピン=擦って弾く、スライス=薄く滑る、
+ * ロブ=柔らかい、ドロップ=触れるだけ。
+ */
+export const HIT_SOUND_PARAMS: Record<ShotType, HitSoundParams> = {
+  flat:    { resonanceHz: 1000, q: 14, transient: 1.0,  noise: 0.25, decay: 0.06, gain: 0.5,  sweep: 0 },
+  topspin: { resonanceHz: 780,  q: 10, transient: 0.7,  noise: 0.5,  decay: 0.09, gain: 0.42, sweep: 1 },
+  slice:   { resonanceHz: 1050, q: 16, transient: 0.6,  noise: 0.55, decay: 0.05, gain: 0.36, sweep: -1 },
+  lob:     { resonanceHz: 580,  q: 7,  transient: 0.35, noise: 0.2,  decay: 0.1,  gain: 0.3,  sweep: 0 },
+  drop:    { resonanceHz: 700,  q: 9,  transient: 0.3,  noise: 0.15, decay: 0.03, gain: 0.26, sweep: 0 },
+}
+
+/** intensity(球速/チャージ由来 0..1)で共鳴中心を持ち上げる量(Hz)。強打ほど明るく */
+export const SFX_HIT_BRIGHTNESS_HZ = 450
+/** intensity で伸ばすクリックのハイパス開放量(Hz)。強打ほど高域が抜ける */
+export const SFX_HIT_CLICK_HZ = 1500
+/** ラウンドロビンの微ピッチ揺らぎ幅(±割合)。反復感(マシンガン感)を消す(§7.5) */
+export const SFX_HIT_PITCH_JITTER = 0.07
+/** サーブはフラットを増強: 音量・トランジェント・余韻の倍率(§7.4 サーブ行) */
+export const SFX_SERVE_GAIN_MUL = 1.25
+export const SFX_SERVE_DECAY_MUL = 1.4
+/** ジャストミート: 共鳴の澄み(Q 倍率)とベル倍音の音量(§7.5) */
+export const SFX_JUST_Q_MUL = 1.6
+export const SFX_JUST_BELL_GAIN = 0.18
+/** 差し込まれ/シャンク: 共鳴を鈍く・ノイズ多めにする倍率(詰まった "コツッ", §7.5) */
+export const SFX_MISHIT_Q_MUL = 0.4
+export const SFX_MISHIT_NOISE_MUL = 1.8
+/** 残響(手続き生成 IR + ConvolverNode): ウェット量と IR 長さ(秒)(§7.5) */
+export const SFX_REVERB_WET = 0.1
+export const SFX_REVERB_SECONDS = 0.2
