@@ -3,7 +3,9 @@
 // ボール: 黄スフィア(BALL_VISUAL_SCALE 倍)+ 発光ハロー(加算合成)
 //        + 長く太い残像トレイル(加算合成)+ 着地予測リング + 強調グラウンドマーカー
 // プレイヤー/AI: 頭・胴体・腰・両腕(上腕+前腕)・両脚を持つローポリ人型。
-//        利き手(右)にラケット。フォア/バックの振り分け・チャージテイクバック・走り footwork。
+//        利き手にラケット。ベース形状は左手持ち向きのため、右利きを group.scale.x=-1 で
+//        鏡像化して右手持ちにする(左利きはベースのまま)。スイングも左右反転して追従。
+//        フォア/バックの振り分け・チャージテイクバック・スマッシュ・走り footwork。
 //        ペルソナの体格・外見・チームカラーでパラメータ化(IMPROVEMENTS §3.6-3.7)。
 //        発汗パーティクル + 疲労サイン(IMPROVEMENTS §5.8(B))。
 // =============================================================================
@@ -485,10 +487,12 @@ export class CharacterEntity {
     const skinColor  = 0xf0d090
     const accentColor = opts.appearance.accent
 
-    const bodyMat   = new THREE.MeshLambertMaterial({ color: palette.body })
-    const limbMat   = new THREE.MeshLambertMaterial({ color: palette.limb })
-    const skinMat   = new THREE.MeshLambertMaterial({ color: skinColor })
-    const accentMat = new THREE.MeshLambertMaterial({ color: accentColor })
+    // side: DoubleSide — 左利きは group.scale.x=-1 で鏡像化するため、面の裏返りで
+    // 見た目が崩れないよう両面描画にしておく(右利きには影響なし)。
+    const bodyMat   = new THREE.MeshLambertMaterial({ color: palette.body, side: THREE.DoubleSide })
+    const limbMat   = new THREE.MeshLambertMaterial({ color: palette.limb, side: THREE.DoubleSide })
+    const skinMat   = new THREE.MeshLambertMaterial({ color: skinColor, side: THREE.DoubleSide })
+    const accentMat = new THREE.MeshLambertMaterial({ color: accentColor, side: THREE.DoubleSide })
     // 上腕の素材: sleeved=ユニ色(limb)、sleeveless=肌色
     const upperArmMat = opts.appearance.sleeves === 'sleeved' ? limbMat : skinMat
 
@@ -567,12 +571,14 @@ export class CharacterEntity {
     this.group.add(this.lHip)
 
     // -------------------------------------------------------------------------
-    // 左利き: y 軸まわりに鏡像化(利き腕を左側に)。
-    // group.scale.x = -1 を使うと内部の法線が反転して見た目が崩れるため、
-    // y 軸 180° 回転で鏡像を実現する。
+    // 利き手の鏡像化(ラケットを持つ腕・スイングの左右)。
+    // ベースのジオメトリは「ラケットが画面上の左手側」に出る向きなので、
+    // 右利きを x 軸で鏡像化して右手持ちにし、左利きはベースのまま(左手持ち)にする。
+    // body 系マテリアルは DoubleSide にしてあるので、負スケールでも面が崩れない。
+    // 向き(rotation.y)は鏡像でも movement 方向そのままでよい。
     // -------------------------------------------------------------------------
-    if (opts.physique.handedness === 'left') {
-      this.group.rotation.y = Math.PI
+    if (opts.physique.handedness === 'right') {
+      this.group.scale.x = -1
     }
 
     // -------------------------------------------------------------------------
@@ -825,10 +831,9 @@ export class CharacterEntity {
     const speed = Math.sqrt(view.vel.x ** 2 + view.vel.z ** 2)
     if (speed > 0.5) {
       const dir = Math.atan2(view.vel.x, view.vel.z)
-      // 左利きの場合は group.rotation.y が Math.PI にオフセットされているため、
-      // 進行方向角度に Math.PI を加算して向きを合わせる
-      const baseRot = this.group.scale.x < 0 ? Math.PI : 0
-      this.group.rotation.y = THREE.MathUtils.lerp(this.group.rotation.y, dir + baseRot, 8 * dt)
+      // 鏡像(scale.x=-1)でも前方ベクトル(+z)は不変なので、向きは movement 方向そのまま。
+      // (旧実装は rotation.y=π で鏡像化していたためオフセットが要ったが、scale 方式では不要)
+      this.group.rotation.y = THREE.MathUtils.lerp(this.group.rotation.y, dir, 8 * dt)
       const tilt = Math.min(speed / 8.0, 1.0) * 0.12
       this.group.rotation.z = THREE.MathUtils.lerp(
         this.group.rotation.z,

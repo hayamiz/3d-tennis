@@ -72,6 +72,8 @@ import {
   SWEET_DIST,
   SWING_LOCK_MOVE_FACTOR,
   SWING_LOCK_TIME,
+  SERVE_RECOVERY_MIN,
+  SERVE_RECOVERY_GAIN,
   TARGET_CLAMP_MARGIN,
   WALK_SPEED,
 } from '../constants'
@@ -511,7 +513,8 @@ export class AIController implements Controller {
     this.serveArmed = false
     this.swingState = 'swing'
     this.swingTimer = AI_SWING_DISPLAY_TIME
-    this.swingLockTimer = SWING_LOCK_TIME
+    // サーブ後の硬直はパワー比例(強打ほど隙大。GAME_DESIGN §5)
+    this.swingLockTimer = SERVE_RECOVERY_MIN + SERVE_RECOVERY_GAIN * power
     // サーブは常にフォアハンド(利き手側)とみなす
     this.swingSide = 'fore'
     this.swingKind = 'smash' // サーブは頭上のオーバーヘッドモーション

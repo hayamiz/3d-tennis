@@ -49,6 +49,8 @@ import {
   COURT_HALF_WIDTH,
   COURT_HALF_LENGTH,
   SERVE_METER_PERIOD,
+  SERVE_RECOVERY_MIN,
+  SERVE_RECOVERY_GAIN,
   CHARGE_TIME,
   CHARGE_MAX,
   CHARGE_MOVE_FACTOR,
@@ -341,6 +343,9 @@ export class PlayerController implements Controller {
         this.swingSide = 'fore' // サーブはフォア扱いで表示
         this.swingKind = 'smash' // サーブは頭上のオーバーヘッドモーション
         this.lastShot = 'flat' // サーブはフラット扱いで記録
+        // サーブ後の硬直: 強打ほど長い(移動が SWING_LOCK_MOVE_FACTOR に低下)。
+        // 端から強打 → 戻れず、良いリターンでエースを取られるリスク(GAME_DESIGN §5)。
+        this.swingLockTimer = SERVE_RECOVERY_MIN + SERVE_RECOVERY_GAIN * power
       }
     }
   }

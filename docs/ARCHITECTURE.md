@@ -484,7 +484,10 @@ class GameRenderer {
     `CharacterEntity` は `{ team: Side; physique: PersonaPhysique; appearance: PersonaAppearance }`
     を受け取り、`TEAM_PALETTE[team]`(1P青/2P赤)で配色、`physique.heightM/BASE_HEIGHT_M` で
     縦・`build` で太さをスケール、`hair`/`sleeves`/`accent` で識別フィーチャー(髪・袖・小物)を
-    付ける。`handedness==='left'` はモデルを y 軸で鏡像化(利き腕反転)。スケールは
+    付ける。利き手はモデルの鏡像化で表現: ベース形状は左手持ち向きのため、**右利きを
+    `group.scale.x = -1`** で鏡像化して右手持ちに(左利きはベースのまま左手持ち)。スイングも
+    左右反転して追従する。body 系マテリアルは `side: DoubleSide` で負スケールでも面が崩れない。
+    向き(rotation.y)は鏡像でも movement 方向のままでよい。スケールは
     ジオメトリ寸法側に適用しスイング/走りアニメ階層を壊さない。物理 `REACH` とは独立。
     `GameRenderer.setMatchup(player, opponent)`(各 `{physique, appearance}`)で
     マッチ開始時に両キャラを再構成する。

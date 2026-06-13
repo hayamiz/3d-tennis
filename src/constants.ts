@@ -269,10 +269,17 @@ export const BALL_VISUAL_SCALE = 1.35
 
 // サーブ
 export const SERVE_HIT_HEIGHT = 2.6
-export const SERVE_SPEED_MIN = 28
-export const SERVE_SPEED_MAX = 46
+// 速度を引き上げ、ビッグサーバー(serveSpeedMul 最大1.12)のトップサーブは
+// コースを読めないと返球が苦しいくらいの球速にする(GAME_DESIGN §5)。
+export const SERVE_SPEED_MIN = 30
+export const SERVE_SPEED_MAX = 56
 export const SERVE_SWEET_MIN = 0.7
 export const SERVE_SWEET_MAX = 0.88
+// サーブ後の硬直(移動が SWING_LOCK_MOVE_FACTOR に低下する秒数)。パワーに比例。
+// 強打サーブほど隙が大きく、良いコースにリターンされるとリターンエースになりやすい。
+// → 常にコート端からトップスピードで打つことにリスクを生む(GAME_DESIGN §5)。
+export const SERVE_RECOVERY_MIN = 0.15 // power=0 の最低硬直(秒)
+export const SERVE_RECOVERY_GAIN = 0.6 // power=1 で +0.6秒(計 0.75秒)
 export const SERVE_METER_PERIOD = 1.2 // 三角波 0→1→0 の周期(秒)
 
 // ---------------------------------------------------------------------------
