@@ -53,6 +53,11 @@ import {
   SWING_LOCK_TIME,
   SWING_LOCK_MOVE_FACTOR,
   CHARGE_RELEASE_COOLDOWN,
+  JUST_WINDOW_BASE,
+  JUST_WINDOW_MIN,
+  JUST_HARD_SPEED_LO,
+  JUST_HARD_SPEED_HI,
+  JUST_QUAL_REF,
   SERVE_X_MARGIN_CENTER,
   SERVE_Z_MIN_BEHIND,
   SERVE_Z_MAX_BEHIND,
@@ -124,6 +129,9 @@ export class PlayerController implements Controller {
   private chargeShot: ShotType | null = null // チャージ中のショット種(最初に押したキー)
   private chargeCooldown = 0 // 空チャージ後の再チャージ不可残り秒数
   private swingLockTimer = 0 // 打球後の移動ロック残り秒数
+  // ジャストミート(§6.1.1): チャージ中に「もう一度タップ」した瞬間からの経過秒。
+  // 自動打球の瞬間にこの値がジャスト窓以内ならジャスト成立。Infinity=タップなし。
+  private timeSinceJustTap = Infinity
 
   // サーブメーター
   private meterActive = false
@@ -233,6 +241,7 @@ export class PlayerController implements Controller {
     this.chargeShot = null
     this.chargeCooldown = 0
     this.swingLockTimer = 0
+    this.timeSinceJustTap = Infinity
     // サーブ種類をフラット(デフォルト)に戻す(GAME_DESIGN §5.1)
     this.serveType = 'flat'
 
@@ -376,10 +385,18 @@ export class PlayerController implements Controller {
     inp: import('../types').InputState,
     ctx: ControlContext,
   ): void {
+    // ジャスト窓のタップ経過時間を進める(§6.1.1)
+    this.timeSinceJustTap += dt
+
     // ---- チャージ状態の更新(移動より先に確定させ、移動係数に反映する) ----
     if (this.charging) {
       // チャージ量を増加(CHARGE_TIME 秒で 1.0、CHARGE_MAX まで)
       this.charge = Math.min(CHARGE_MAX, this.charge + dt / CHARGE_TIME)
+
+      // ジャストミート入力: チャージ中(=既に保持中)に新たなショットキー押下エッジが
+      // 来たら「もう一度タップ」とみなしタイマーを 0 に。保持キーは維持されるため
+      // チャージは継続し、打球種(chargeShot)も変わらない(IMPROVEMENTS §6.1.1)。
+      if (inp.shotPressed !== null) this.timeSinceJustTap = 0
 
       // 保持キーを離した → 空チャージ。再チャージ不可時間に入る
       // (shotReleased が「今フレーム離されたキー」、shotHeld が「まだ押下中のキー」)
@@ -400,6 +417,8 @@ export class PlayerController implements Controller {
         this.charging = true
         this.charge = 0
         this.chargeShot = inp.shotPressed
+        // チャージ開始の押下自体はジャスト入力に数えない(窓をリセット)
+        this.timeSinceJustTap = Infinity
       }
     }
 
@@ -541,6 +560,10 @@ export class PlayerController implements Controller {
     // 打球直前のボール速度の大きさ(m/s)。相手球の勢いをソルバへ渡す(GAME_DESIGN §4.5)
     const incomingSpeed = Math.hypot(ball.vel.x, ball.vel.y, ball.vel.z)
 
+    // ジャストミート判定(§6.1.1): 接触の直前にタップがあり、かつ窓以内なら成立。
+    // 難球(速球・走らされ=低品質)ほど窓を狭くする。
+    const just = this.isJustMeet(incomingSpeed, quality)
+
     // 打球要求(チャージ量・相手球速を添付。リーチ内で即打した場合は charge ≈ 0)
     ctx.requestShot({
       type: shotType,
@@ -552,6 +575,7 @@ export class PlayerController implements Controller {
       incomingSpeed,
       // 自分のペルソナ倍率を添付(ソルバが初速・狙い等に乗算)
       mods: this.mods,
+      just,
     })
 
     // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
@@ -578,6 +602,21 @@ export class PlayerController implements Controller {
     this.charge = 0
     this.chargeShot = null
     this.swingLockTimer = SWING_LOCK_TIME
+    // 打球で消費。次の打球へは持ち越さない(§6.1.1)
+    this.timeSinceJustTap = Infinity
+  }
+
+  /**
+   * ジャストミート成立判定(§6.1.1)。直近のタップからの経過(timeSinceJustTap)が
+   * ジャスト窓以内なら true。窓は難球(速球・低品質=走らされ)ほど狭い。
+   */
+  private isJustMeet(incomingSpeed: number, quality: number): boolean {
+    const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
+    const speedHard = clamp01((incomingSpeed - JUST_HARD_SPEED_LO) / (JUST_HARD_SPEED_HI - JUST_HARD_SPEED_LO))
+    const qualHard = clamp01((JUST_QUAL_REF - quality) / JUST_QUAL_REF)
+    const hardness = Math.max(speedHard, qualHard)
+    const window = JUST_WINDOW_BASE + (JUST_WINDOW_MIN - JUST_WINDOW_BASE) * hardness
+    return this.timeSinceJustTap <= window
   }
 
   // ---------------------------------------------------------------------------

@@ -71,6 +71,9 @@ import {
   VOLLEY_SPEED_CAP,
   VOLLEY_AIM_MUL,
   VOLLEY_CHARGE_MUL,
+  JUST_POWER_MUL,
+  JUST_AIM_MUL,
+  JUST_SPIN_MUL,
 } from '../constants'
 
 /** ボレー成立の打点高さ下限(これ以上 VOLLEY_MAX_HEIGHT 未満) */
@@ -337,9 +340,11 @@ export function solveShot(req: ShotRequest): ShotSolution {
     ? 1 + (chargePower - 1) * VOLLEY_CHARGE_MUL
     : chargePower
   let speed = param.speed * powerScale * effChargePower * speedMul * m.shotSpeedMul + speedAdd
+  // ジャストミート: 初速に控えめなボーナス(IMPROVEMENTS §6.1.1)。
+  if (req.just) speed *= JUST_POWER_MUL
   // ボレーは振り抜かないため初速を VOLLEY_SPEED_CAP で頭打ちにする。
   if (isVolley) speed = Math.min(speed, VOLLEY_SPEED_CAP)
-  let spinScalar = param.spinScalar * spinMul
+  let spinScalar = param.spinScalar * spinMul * (req.just ? JUST_SPIN_MUL : 1)
   // ネット越えマージンにペルソナの netMarginMul を乗算(スピン安定が高いほど安全)。
   let netMargin = param.netMargin * netMarginScale * netMarginMul * m.netMarginMul
 
@@ -411,6 +416,8 @@ export function solveShot(req: ShotRequest): ShotSolution {
     paceAimNoise * m.returnTouchMul
   // ボレー(ブロック)は狙いが正確: 狙い誤差全体を VOLLEY_AIM_MUL 倍に縮める。
   if (isVolley) noiseR *= VOLLEY_AIM_MUL
+  // ジャストミート: 狙い誤差を縮めて正確に(IMPROVEMENTS §6.1.1)。
+  if (req.just) noiseR *= JUST_AIM_MUL
   if (noiseR > 0) {
     const ang = Math.random() * Math.PI * 2
     const r = Math.sqrt(Math.random()) * noiseR

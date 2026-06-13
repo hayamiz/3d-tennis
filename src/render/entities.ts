@@ -30,6 +30,13 @@ const HALO_RADIUS = BALL_DRAW_RADIUS * 2.8
 // 着地予測リングの基準半径(m)
 const LANDING_RING_RADIUS = 0.4
 
+// ジャストミート飛行着色(§6.1.1 (B))。既定色 ↔ 金色を timer で補間する。
+const JUST_BALL_FLASH_TIME = 0.35 // 秒
+const JUST_GOLD = new THREE.Color(0xffcf6a)
+const BALL_EMISSIVE_DEFAULT = new THREE.Color(0xb8d000) // 本体 emissive 既定
+const HALO_COLOR_DEFAULT = new THREE.Color(0xffffff) // ハロー Sprite の color 既定(白×金テクスチャ)
+const TRAIL_COLOR_DEFAULT = new THREE.Color(0xeaff5a) // トレイル既定色
+
 // ---------------------------------------------------------------------------
 // プレイヤーモデルの基準寸法(m)。これらが「r=3(標準)時の形状」。
 // 実際には PersonaPhysique(heightM/build)をもとにスケール値を求め、
@@ -85,6 +92,8 @@ export class BallEntity {
   private readonly trailGeo: THREE.SphereGeometry
   private readonly trailMat: THREE.MeshBasicMaterial
   private pulse = 0 // 着地リングの脈動位相
+  // ジャストミート(§6.1.1 (B)): 成立打球は飛行中ハロー/本体/トレイルを金色に着色
+  private justFlashTimer = 0
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
@@ -179,10 +188,38 @@ export class BallEntity {
     })
   }
 
+  /**
+   * ジャストミート成立打球の発光開始(§6.1.1 (B))。一定時間ハロー/本体/トレイルを金色に。
+   * main が打球時に呼ぶ。
+   */
+  flashJust(): void {
+    this.justFlashTimer = JUST_BALL_FLASH_TIME
+  }
+
+  /** ジャスト着色の適用(timer>0 の間、金色へ寄せる。0 で既定色へ戻す) */
+  private applyJustTint(dt: number): void {
+    if (this.justFlashTimer > 0) this.justFlashTimer = Math.max(0, this.justFlashTimer - dt)
+    const k = this.justFlashTimer > 0 ? this.justFlashTimer / JUST_BALL_FLASH_TIME : 0
+    const sphereMat = this.sphere.material as THREE.MeshStandardMaterial
+    const haloMat = this.halo.material as THREE.SpriteMaterial
+    if (k > 0) {
+      sphereMat.emissive.lerpColors(BALL_EMISSIVE_DEFAULT, JUST_GOLD, k)
+      sphereMat.emissiveIntensity = 0.6 + 0.5 * k
+      haloMat.color.lerpColors(HALO_COLOR_DEFAULT, JUST_GOLD, k)
+      this.trailMat.color.lerpColors(TRAIL_COLOR_DEFAULT, JUST_GOLD, k)
+    } else {
+      sphereMat.emissive.copy(BALL_EMISSIVE_DEFAULT)
+      sphereMat.emissiveIntensity = 0.6
+      haloMat.color.copy(HALO_COLOR_DEFAULT)
+      this.trailMat.color.copy(TRAIL_COLOR_DEFAULT)
+    }
+  }
+
   /** ワールドビューでボール位置を更新し、各種マーカー・トレイルを更新 */
   update(dt: number, world: WorldView): void {
     const bpos = world.ball.pos
     this.group.position.set(bpos.x, bpos.y, bpos.z)
+    this.applyJustTint(dt)
 
     // 擬似影 + 輪郭リングをボール真下に投影(高さに応じ縮小・淡化)
     const shadowScale = Math.max(0.25, 1.0 - bpos.y * 0.07)

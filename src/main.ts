@@ -322,12 +322,20 @@ function handleShot(req: ShotRequest): void {
   dbg(`shot ${req.hitter} ${req.type} q=${req.quality.toFixed(2)} hit=${fmt(req.hitPos)} target=${fmt(req.target)}`)
   ballSim.launch(req.hitPos.clone(), sol.vel, sol.spin, req.hitter)
   renderer.sceneApi.spawnHitFx(req.hitPos.clone())
+  // ジャストミート(§6.1.1): 成立打球は金白の発光リング+スパーク、ボール飛行着色、
+  // 打球音に澄んだベル倍音を重ねる。
+  if (req.just) {
+    renderer.sceneApi.spawnJustMeetFx(req.hitPos.clone())
+    renderer.flashJustBall()
+    dbg(`JUST ${req.hitter} ${req.type} q=${req.quality.toFixed(2)}`)
+  }
   // 打球音(§7): ショット種別ごとに音色を作り分け、球威(quality)で明るさを、
   // 打点 x でステレオ定位を決める。差し込まれ(山なり化)は鈍い "コツッ" に。
   sfx.playHit(req.type, {
     intensity: req.quality,
     panX: Math.max(-1, Math.min(1, req.hitPos.x / COURT_HALF_WIDTH)),
     mishit: (sol.mishit ?? 0) > MISHIT_ACTIVE_EPS,
+    just: req.just ?? false,
   })
   judge.onEvent({ kind: 'hit', by: req.hitter, shot: req.type }, ballSim.state)
 }

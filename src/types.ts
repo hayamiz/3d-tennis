@@ -189,6 +189,12 @@ export interface ShotRequest {
    * solveShot がショット初速・チャージ・狙い誤差・ネットマージン・差し込まれ等に乗算する。
    */
   mods?: PersonaModifiers
+  /**
+   * ジャストミート成立フラグ(docs/IMPROVEMENTS.md §6.1.1)。接触の窓内でタップ成功した打球。
+   * solveShot が初速 ×JUST_POWER_MUL・狙い誤差 ×JUST_AIM_MUL・回転 ×JUST_SPIN_MUL の
+   * 控えめなボーナスを与える。省略/false で通常打球(ペナルティなし)。演出にも使う。
+   */
+  just?: boolean
 }
 
 export interface ShotSolution {
@@ -466,6 +472,8 @@ export interface WorldView {
 export interface SceneApi {
   spawnBounceFx(pos: Vector3): void
   spawnHitFx(pos: Vector3): void
+  /** ジャストミート成立時の発光リング+スパーク(金白)。接触点に発火(IMPROVEMENTS §6.1.1) */
+  spawnJustMeetFx(pos: Vector3): void
 }
 
 // ---------------------------------------------------------------------------
