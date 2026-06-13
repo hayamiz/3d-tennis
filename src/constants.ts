@@ -333,8 +333,14 @@ export const AI_PROFILES: Record<Difficulty, AIProfile> = {
  */
 export const AI_LEAVE_CLEAR_MARGIN = 0.6
 
-/** AI のホームポジション(ベースライン少し後ろ、z は opponent 側で符号反転して使う) */
-export const HOME_POS_Z = COURT_HALF_LENGTH + 1.0
+/**
+ * AI のホーム(復帰)ポジション。z は opponent 側で符号反転して使う。
+ * ベースライン際にとる。以前はベースラインより 1.0m 後方(COURT_HALF_LENGTH+1.0)で、
+ * 打球後にドロップから遠ざかる方向へ後退復帰してしまい、短い球(ドロップ)に届かず
+ * 2バウンドで失点する原因になっていた(BUG-002 の再発)。ベースライン際まで前へ出すことで、
+ * 深い球は intercept 時に stanceGoalZ が後退補正するため対応しつつ、ドロップへの初動距離を縮める。
+ */
+export const HOME_POS_Z = COURT_HALF_LENGTH - 0.3
 
 // ---------------------------------------------------------------------------
 // AI 戦術スタンス(ベースライン / ネット)— GAME_DESIGN §7.1 / ARCHITECTURE §11

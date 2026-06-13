@@ -170,6 +170,7 @@ export class AIController implements Controller {
   // 'net'=前へ詰めてボレー(着地点より前に出る)。入射球ごとに decideStance で決める。
   private stance: 'baseline' | 'net' = 'baseline'
   private stanceDecided = false // この入射球についてスタンスを決定済みか
+  private chaseLogged = false // この入射球について追走ログを出力済みか(?debug 診断用)
   private readonly targetPos = new Vector3(0, 0, -HOME_POS_Z) // 現在の移動目標
   private reactionTimer = 0 // 相手打球後の反応遅延の残り時間
   private lastSeenHitBy: Side | null = null // 直近に観測した lastHitBy(打球検出用)
@@ -551,6 +552,7 @@ export class AIController implements Controller {
       this.leaveDecided = false
       this.leaveCurrentBall = false
       this.stanceDecided = false
+      this.chaseLogged = false
     }
     // 自分が打った直後はホームへ戻るモードへ
     if (hitBy === this.side && this.lastSeenHitBy !== this.side) {
@@ -589,6 +591,33 @@ export class AIController implements Controller {
         this.decideStance(ctx, pred)
         goalX = pred.pos.x
         goalZ = this.stanceGoalZ(pred.pos.z)
+        // 追走診断ログ(入射球ごとに1回)。ドロップ見送り等の事後分析用(?debug)。
+        // 予測着地への距離・到達ETA・スタミナ・スプリント可否を残し、
+        // 「届かなかったのか/見送ったのか/スタミナ切れか」を判別できるようにする。
+        if (!this.chaseLogged) {
+          this.chaseLogged = true
+          const distToLanding = Math.hypot(pred.pos.x - this.pos.x, pred.pos.z - this.pos.z)
+          const sprintSpeed = SPRINT_SPEED * this.profile.speedScale * this.mods.moveSpeedMul
+          const reachEta = sprintSpeed > 0 ? distToLanding / sprintSpeed : Infinity
+          const staminaPct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
+          ctx.logDebug?.({
+            kind: 'note',
+            msg: `chase land=(${round2(pred.pos.x)},${round2(pred.pos.z)}) ai=(${round2(this.pos.x)},${round2(this.pos.z)}) dist=${round2(distToLanding)} eta=${round2(reachEta)}s sprintMax=${round2(sprintSpeed)} stamina=${round2(staminaPct)} stance=${this.stance}`,
+            data: {
+              landX: round2(pred.pos.x),
+              landZ: round2(pred.pos.z),
+              aiX: round2(this.pos.x),
+              aiZ: round2(this.pos.z),
+              goalZ: round2(goalZ),
+              dist: round2(distToLanding),
+              reachEta: round2(reachEta),
+              sprintMax: round2(sprintSpeed),
+              staminaPct: round2(staminaPct),
+              canSprint: this.stamina > 0,
+              stance: this.stance,
+            },
+          })
+        }
       } else if (pred && !this.isOwnSide(pred.pos.z)) {
         // 相手側に落ちる予測(=自分が打った後など)→ホームへ戻る
         this.mode = 'returning'

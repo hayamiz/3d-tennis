@@ -416,7 +416,24 @@ function bannerForVerdict(v: RallyVerdict): string {
 
 function applyVerdict(v: RallyVerdict): void {
   dbg(`verdict winner=${v.winner} reason=${v.reason} ball=${fmt(ballSim.state.pos)}`)
-  pushLog('sys', 'verdict', `verdict ${v.reason} → ${v.winner}`, { reason: v.reason, winner: v.winner })
+  // 失点側のテレメトリを付与: ボールまでの距離・スタミナを残し、
+  // 「届かなかった(距離大=ウロウロ走らされ/ドロップ)」か「見送り・空振り(距離小)」かを
+  // 事後に判別できるようにする(?debug 診断用)。
+  const loserSide = otherSide(v.winner)
+  const loserView = (loserSide === 'player' ? playerCtrl : aiCtrl).view
+  const bp = ballSim.state.pos
+  const distToBall = Math.hypot(bp.x - loserView.pos.x, bp.z - loserView.pos.z)
+  pushLog('sys', 'verdict', `verdict ${v.reason} → ${v.winner} (loser=${loserSide} distToBall=${distToBall.toFixed(1)} stamina=${loserView.staminaPct.toFixed(2)})`, {
+    reason: v.reason,
+    winner: v.winner,
+    loser: loserSide,
+    ballX: Math.round(bp.x * 100) / 100,
+    ballZ: Math.round(bp.z * 100) / 100,
+    loserX: Math.round(loserView.pos.x * 100) / 100,
+    loserZ: Math.round(loserView.pos.z * 100) / 100,
+    loserDistToBall: Math.round(distToBall * 100) / 100,
+    loserStaminaPct: Math.round(loserView.staminaPct * 100) / 100,
+  })
   // フォルト/ダブルフォルトはこのポイントを「異常」としてフラグ(デバッグで拾いやすく)
   if (v.reason === 'fault' || v.reason === 'doubleFault') pointFlagged = true
   // 1stサーブのフォルトは失点にせず 2nd へ(ポイント継続なのでログは確定しない)
