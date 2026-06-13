@@ -19,6 +19,84 @@ export type ServeType = 'flat' | 'slice' | 'kick'
 
 export type Difficulty = 'easy' | 'normal' | 'hard'
 
+// ---------------------------------------------------------------------------
+// プレイヤーペルソナ(プレイスタイル/能力タイプ) — docs/GAME_DESIGN.md §12
+// ---------------------------------------------------------------------------
+
+export type PersonaId =
+  | 'sambrant'
+  | 'agachi'
+  | 'jokovin'
+  | 'nishigoori'
+  | 'nadau'
+  | 'federun'
+
+/** 6軸の能力値(各 1..5)。レーダーチャートにそのまま使う */
+export interface PersonaRatings {
+  serve: number
+  power: number
+  spin: number
+  speed: number
+  stamina: number
+  finesse: number
+}
+
+/** 身体的特徴(見た目の識別 + ごく軽いゲーム挙動) */
+export interface PersonaPhysique {
+  /** 身長(m)。モデル縦スケールとサーブ打点高に影響 */
+  heightM: number
+  /** 体格(手足・胴の太さスケール) */
+  build: 'slim' | 'athletic' | 'stocky'
+  /** 利き手。'left' はフォア/バック判定を左右反転 */
+  handedness: 'right' | 'left'
+}
+
+/** 外見(チームカラーとは独立したペルソナ識別子) */
+export interface PersonaAppearance {
+  hair: 'short' | 'bald' | 'headband' | 'long' | 'cap'
+  sleeves: 'sleeved' | 'sleeveless'
+  /** 小物(ヘッドバンド/リスト/シューズ)のアクセント色 hex。青/赤に紛れない色 */
+  accent: number
+}
+
+export interface Persona {
+  id: PersonaId
+  name: string
+  archetype: string
+  blurb: string
+  ratings: PersonaRatings
+  physique: PersonaPhysique
+  appearance: PersonaAppearance
+}
+
+/**
+ * ペルソナ能力値から導出した倍率の束(docs/ARCHITECTURE.md §6.5)。
+ * 既存定数に掛けるだけでペルソナ差を表現する(新システムを足さない)。
+ * 1.0 = 影響なし。constants.ts の personaModifiers() で算出する。
+ */
+export interface PersonaModifiers {
+  // サーブ
+  serveSpeedMul: number
+  serveFaultMul: number
+  // パワー
+  shotSpeedMul: number
+  chargeGainMul: number
+  // スピン/安定
+  aimNoiseMul: number
+  netMarginMul: number
+  returnSolidMul: number
+  // スピード
+  moveSpeedMul: number
+  reachMul: number
+  // スタミナ
+  staminaMaxMul: number
+  staminaDrainMul: number
+  staminaRegenMul: number
+  // 技巧
+  touchNoiseMul: number
+  returnTouchMul: number
+}
+
 export type GamePhase = 'menu' | 'serve' | 'rally' | 'pointOver' | 'matchOver'
 
 /** 相手側の Side を返す */
@@ -86,6 +164,11 @@ export interface ShotRequest {
    * 追加フィールドは不要。
    */
   incomingSpeed: number
+  /**
+   * 打者のペルソナ倍率(docs/ARCHITECTURE.md §6.5)。省略時は中立(全 1.0)。
+   * solveShot がショット初速・チャージ・狙い誤差・ネットマージン・差し込まれ等に乗算する。
+   */
+  mods?: PersonaModifiers
 }
 
 export interface ShotSolution {
@@ -239,6 +322,10 @@ export interface ScoreView {
 export interface MatchConfig {
   difficulty: Difficulty
   gamesToWin: 1 | 2 | 4
+  /** プレイヤーが選んだペルソナ */
+  playerPersona: PersonaId
+  /** 相手 AI のペルソナ */
+  opponentPersona: PersonaId
 }
 
 export interface MatchStats {

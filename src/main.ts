@@ -13,6 +13,7 @@ import {
   type InputState,
   type MatchConfig,
   type MatchStats,
+  type PersonaModifiers,
   type RallyVerdict,
   type ServeType,
   type ServiceBox,
@@ -24,9 +25,12 @@ import {
 import {
   AI_PROFILES,
   BANNER_SEC,
+  BASE_HEIGHT_M,
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
   PHYS_DT,
+  PLAYER_PERSONAS,
+  personaModifiers,
   SERVE_HIT_HEIGHT,
   SERVICE_LINE_Z,
   STAMINA_MAX,
@@ -77,7 +81,15 @@ window.addEventListener('resize', () => renderer.resize())
 // マッチ状態(onStart で初期化)
 // ---------------------------------------------------------------------------
 let phase: GamePhase = 'menu'
-let config: MatchConfig = { difficulty: 'normal', gamesToWin: 2 }
+let config: MatchConfig = {
+  difficulty: 'normal',
+  gamesToWin: 2,
+  playerPersona: 'federun',
+  opponentPersona: 'jokovin',
+}
+// 各サイドのペルソナ倍率(startMatch で確定)。サーブ倍率・打点高に使う。
+let playerMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.federun.ratings)
+let opponentMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.jokovin.ratings)
 let score: MatchScore
 let playerCtrl: Controller
 let aiCtrl: Controller
@@ -178,15 +190,18 @@ function handleServe(
   if (phase !== 'serve' || score.view.server !== server) return
   const box = currentServiceBox(server)
   const ctrl = server === 'player' ? playerCtrl : aiCtrl
+  const serverPersona = PLAYER_PERSONAS[server === 'player' ? config.playerPersona : config.opponentPersona]
+  const mods = server === 'player' ? playerMods : opponentMods
   const hitPos = ctrl.view.pos.clone()
-  hitPos.y = SERVE_HIT_HEIGHT
+  // 打点高はサーブ基準 × 身長比(高身長ほど高い打点。控えめ)
+  hitPos.y = SERVE_HIT_HEIGHT * (serverPersona.physique.heightM / BASE_HEIGHT_M)
   // ボックス内の狙い: aimX でワイド/センターを選ぶ(中央はボックス中心)
   const margin = 0.5
   const xCenter = (box.xMin + box.xMax) / 2
   const xAim =
     aimX === 0 ? xCenter : aimX > 0 ? box.xMax - margin : box.xMin + margin
   const target = new Vector3(xAim, 0, box.zSign * (SERVICE_LINE_Z - 1.0))
-  const sol = solveServe(hitPos, target, power, server, serveType)
+  const sol = solveServe(hitPos, target, power, server, serveType, mods)
   ballSim.launch(hitPos, sol.vel, sol.spin, server)
   judge.reset(server, box)
   judge.onEvent({ kind: 'hit', by: server, shot: 'flat' }, ballSim.state)
@@ -296,8 +311,18 @@ function startMatch(cfg: MatchConfig): void {
   config = cfg
   score = new MatchScore(cfg.gamesToWin)
   stats = newStats()
-  playerCtrl = new PlayerController(sharedInput)
-  aiCtrl = new AIController(AI_PROFILES[cfg.difficulty])
+  // ペルソナ倍率・身体を算出して各モジュールへ注入(docs/ARCHITECTURE.md §6.5)
+  const playerPersona = PLAYER_PERSONAS[cfg.playerPersona]
+  const opponentPersona = PLAYER_PERSONAS[cfg.opponentPersona]
+  playerMods = personaModifiers(playerPersona.ratings)
+  opponentMods = personaModifiers(opponentPersona.ratings)
+  playerCtrl = new PlayerController(sharedInput, playerMods, playerPersona.physique)
+  aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique)
+  // 3Dモデルをペルソナの体格・外見・チームカラーで再構成
+  renderer.setMatchup(
+    { physique: playerPersona.physique, appearance: playerPersona.appearance },
+    { physique: opponentPersona.physique, appearance: opponentPersona.appearance },
+  )
   serveNumber = 1
   pointsInGame = 0
   banner = null

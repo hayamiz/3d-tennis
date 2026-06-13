@@ -9,6 +9,8 @@ import type {
   ControlContext,
   Controller,
   LandingPrediction,
+  PersonaModifiers,
+  PersonaPhysique,
   PlayerView,
   ServeType,
   ServeMeterView,
@@ -105,6 +107,13 @@ export class AIController implements Controller {
   readonly side: Side = 'opponent'
   private readonly profile: AIProfile
 
+  // ペルソナ倍率・身体(DI)。中立倍率(全1.0)・右利きでは従来と同一挙動。
+  private readonly mods: PersonaModifiers
+  private readonly physique: PersonaPhysique
+  // ペルソナ倍率を反映した有効スタミナ上限・有効リーチ
+  private readonly effStaminaMax: number
+  private readonly effReach: number
+
   // 物理状態
   private readonly pos = new Vector3(0, 0, -HOME_POS_Z)
   private readonly vel = new Vector3(0, 0, 0)
@@ -142,8 +151,14 @@ export class AIController implements Controller {
   private readonly _view: PlayerView
   private readonly _serveMeter: ServeMeterView = { active: false, value: 0, serveType: 'flat' }
 
-  constructor(profile: AIProfile) {
+  constructor(profile: AIProfile, mods: PersonaModifiers, physique: PersonaPhysique) {
     this.profile = profile
+    this.mods = mods
+    this.physique = physique
+    this.effStaminaMax = STAMINA_MAX * mods.staminaMaxMul
+    this.effReach = REACH * mods.reachMul
+    // スタミナ初期値を有効上限に(中立倍率では STAMINA_MAX のまま)
+    this.stamina = this.effStaminaMax
     this._view = {
       side: 'opponent',
       pos: this.pos,
@@ -242,7 +257,7 @@ export class AIController implements Controller {
 
   /** ゲーム間のスタミナ全回復(GAME_DESIGN §6) */
   recoverFullStamina(): void {
-    this.stamina = STAMINA_MAX
+    this.stamina = this.effStaminaMax
   }
 
   // -------------------------------------------------------------------------
@@ -555,7 +570,9 @@ export class AIController implements Controller {
 
     // スイングロック中は移動速度を SWING_LOCK_MOVE_FACTOR 倍に低下(プレイヤーと同じ挙動)
     const lockFactor = this.swingLockTimer > 0 ? SWING_LOCK_MOVE_FACTOR : 1.0
-    const maxSpeed = (wantSprint ? SPRINT_SPEED : WALK_SPEED) * this.profile.speedScale * lockFactor
+    // 最高速にペルソナ倍率 moveSpeedMul を乗算(difficulty の speedScale とは独立)
+    const maxSpeed =
+      (wantSprint ? SPRINT_SPEED : WALK_SPEED) * this.profile.speedScale * this.mods.moveSpeedMul * lockFactor
 
     // 目標方向への速度を加速度モデルで近づける
     const dirX = dx / dist
@@ -577,11 +594,19 @@ export class AIController implements Controller {
 
     this.integrate(dt)
 
-    // スタミナ更新
+    // スタミナ更新(消耗・回復・上限にペルソナ倍率を反映)
     if (wantSprint) {
-      this.stamina = clamp(this.stamina - STAMINA_SPRINT_DRAIN * dt, 0, STAMINA_MAX)
+      this.stamina = clamp(
+        this.stamina - STAMINA_SPRINT_DRAIN * this.mods.staminaDrainMul * dt,
+        0,
+        this.effStaminaMax,
+      )
     } else {
-      this.stamina = clamp(this.stamina + STAMINA_REGEN * dt, 0, STAMINA_MAX)
+      this.stamina = clamp(
+        this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt,
+        0,
+        this.effStaminaMax,
+      )
     }
   }
 
@@ -599,7 +624,11 @@ export class AIController implements Controller {
 
   /** 非スプリント時のスタミナ回復のみ(静止フレーム用) */
   private applyStaminaIdle(dt: number): void {
-    this.stamina = clamp(this.stamina + STAMINA_REGEN * dt, 0, STAMINA_MAX)
+    this.stamina = clamp(
+      this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt,
+      0,
+      this.effStaminaMax,
+    )
     this.sprinting = false
   }
 
@@ -619,9 +648,9 @@ export class AIController implements Controller {
     // 自分側に来ているボールのみ対象
     if (!this.isOwnSide(bpos.z)) return
 
-    // 水平距離・高さチェック
+    // 水平距離・高さチェック(リーチはペルソナ補正済みの effReach)
     const hdist = Math.hypot(bpos.x - this.pos.x, bpos.z - this.pos.z)
-    if (hdist > REACH || bpos.y > REACH_HEIGHT) return
+    if (hdist > this.effReach || bpos.y > REACH_HEIGHT) return
 
     // 最接近を待ってから打つ(品質は距離で決まるため、リーチに入った瞬間に
     // 振ると常に最低品質になる)。十分近い(SWEET_DIST 以内)なら即打ち、
@@ -638,8 +667,11 @@ export class AIController implements Controller {
     this.lastShot = req.type
 
     // スイングサイドを決定: AI は奥側(z<0)で +z を向く。
-    // 利き手=右手側は世界の −x 方向。打点ボールが AI より −x 側なら 'fore'、+x 側なら 'back'。
-    this.swingSide = bpos.x < this.pos.x ? 'fore' : 'back'
+    // 右利きの利き手側は世界の −x 方向。打点ボールが AI より −x 側なら 'fore'、+x 側なら 'back'。
+    // 左利きは不等号を反転する。
+    const ballOnLeft = bpos.x < this.pos.x
+    const foreSide = this.physique.handedness === 'left' ? !ballOnLeft : ballOnLeft
+    this.swingSide = foreSide ? 'fore' : 'back'
 
     this.swingState = 'swing'
     this.swingTimer = AI_SWING_DISPLAY_TIME
@@ -653,23 +685,27 @@ export class AIController implements Controller {
 
   /** 品質計算(GAME_DESIGN §4.2)。プレイヤーと同一式 + 凡ミス */
   private computeQuality(hdist: number): number {
-    // 距離係数: SWEET_DIST 以内で 1.0、REACH で QUALITY_MIN へ線形
+    // 距離係数: SWEET_DIST 以内で 1.0、effReach で QUALITY_MIN へ線形
+    // (REACH 上限はペルソナ補正済みの effReach を使う)
+    const reach = this.effReach
     let distFactor: number
     if (hdist <= SWEET_DIST) {
       distFactor = 1.0
-    } else if (hdist >= REACH) {
+    } else if (hdist >= reach) {
       distFactor = QUALITY_MIN
     } else {
-      const t = (hdist - SWEET_DIST) / (REACH - SWEET_DIST)
+      const t = (hdist - SWEET_DIST) / (reach - SWEET_DIST)
       distFactor = lerp(1.0, QUALITY_MIN, t)
     }
 
-    // スタミナ係数: 閾値以上で 1.0、0 で floor へ線形
+    // スタミナ係数: 閾値以上で 1.0、0 で floor へ線形。
+    // 低下閾値は有効上限 effStaminaMax に比例させる(中立倍率では従来と同一)。
+    const lowThreshold = STAMINA_LOW_THRESHOLD * this.mods.staminaMaxMul
     let staminaFactor: number
-    if (this.stamina >= STAMINA_LOW_THRESHOLD) {
+    if (this.stamina >= lowThreshold) {
       staminaFactor = 1.0
     } else {
-      const t = this.stamina / STAMINA_LOW_THRESHOLD
+      const t = this.stamina / lowThreshold
       staminaFactor = lerp(STAMINA_QUALITY_FLOOR, 1.0, t)
     }
 
@@ -805,6 +841,8 @@ export class AIController implements Controller {
       quality,
       charge,
       incomingSpeed,
+      // 自分のペルソナ倍率を添付(ソルバが初速・狙い等に乗算)
+      mods: this.mods,
     }
   }
 

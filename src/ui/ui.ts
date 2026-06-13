@@ -10,12 +10,15 @@ import type {
   Difficulty,
   MatchConfig,
   ServeType,
+  PersonaId,
 } from '../types'
 import {
   SERVE_SWEET_MIN,
   SERVE_SWEET_MAX,
   STAMINA_LOW_THRESHOLD,
   STAMINA_MAX,
+  PLAYER_PERSONAS,
+  PERSONA_ORDER,
 } from '../constants'
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,217 @@ interface HudCache {
   chargeOvercharged: boolean
   /** 選択中のサーブ種類(サーブフェーズ表示用) */
   serveType: ServeType
+}
+
+// ---------------------------------------------------------------------------
+// レーダーチャート描画
+// ---------------------------------------------------------------------------
+
+/**
+ * 六角形レーダーチャートを canvas に描画する。
+ * 軸の順(時計回り): サーブ → パワー → スピン/安定 → スタミナ → 技巧 → スピード
+ * IMPROVEMENTS §3.1 の並びに従う。
+ */
+function drawRadar(
+  canvas: HTMLCanvasElement,
+  ratings: { serve: number; power: number; spin: number; speed: number; stamina: number; finesse: number },
+  strokeColor: string,
+  fillColor: string,
+): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  const cx = w / 2
+  const cy = h / 2
+  // 外周グリッドのサイズ(最大 rating=5 のときの半径)
+  const maxR = Math.min(w, h) * 0.42
+  const N = 6
+  // 頂点0が上(12時方向)から時計回り
+  // IMPROVEMENTS §3.1: サーブ→パワー→スピン/安定→スタミナ→技巧→スピード
+  const axisLabels = ['サーブ', 'パワー', 'スピン/安定', 'スタミナ', '技巧', 'スピード']
+  const axisValues = [
+    ratings.serve,
+    ratings.power,
+    ratings.spin,
+    ratings.stamina,
+    ratings.finesse,
+    ratings.speed,
+  ]
+  const MAX_RATING = 5
+
+  /** 軸インデックス i の頂点座標を返す(0=上=12時から時計回り) */
+  function axisXY(i: number, r: number): { x: number; y: number } {
+    const angle = (Math.PI * 2 * i) / N - Math.PI / 2
+    return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) }
+  }
+
+  // --- グリッド描画(5段階の同心六角形) ---
+  for (let level = 1; level <= MAX_RATING; level++) {
+    const r = (maxR * level) / MAX_RATING
+    ctx.beginPath()
+    for (let i = 0; i < N; i++) {
+      const { x, y } = axisXY(i, r)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.closePath()
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)'
+    ctx.lineWidth = 0.8
+    ctx.stroke()
+  }
+
+  // --- 軸線 ---
+  for (let i = 0; i < N; i++) {
+    const { x, y } = axisXY(i, maxR)
+    ctx.beginPath()
+    ctx.moveTo(cx, cy)
+    ctx.lineTo(x, y)
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)'
+    ctx.lineWidth = 0.8
+    ctx.stroke()
+  }
+
+  // --- データ多角形 ---
+  ctx.beginPath()
+  for (let i = 0; i < N; i++) {
+    const r = (maxR * axisValues[i]) / MAX_RATING
+    const { x, y } = axisXY(i, r)
+    if (i === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  }
+  ctx.closePath()
+  ctx.fillStyle = fillColor
+  ctx.fill()
+  ctx.strokeStyle = strokeColor
+  ctx.lineWidth = 2
+  ctx.stroke()
+
+  // --- 頂点ドット ---
+  for (let i = 0; i < N; i++) {
+    const r = (maxR * axisValues[i]) / MAX_RATING
+    const { x, y } = axisXY(i, r)
+    ctx.beginPath()
+    ctx.arc(x, y, 3, 0, Math.PI * 2)
+    ctx.fillStyle = strokeColor
+    ctx.fill()
+  }
+
+  // --- 軸ラベル ---
+  ctx.fillStyle = 'rgba(200,220,240,0.80)'
+  ctx.font = `${Math.round(w * 0.085)}px system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (let i = 0; i < N; i++) {
+    const labelR = maxR + 16
+    const { x, y } = axisXY(i, labelR)
+    ctx.fillText(axisLabels[i], x, y)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ペルソナピッカーコンポーネント
+// ---------------------------------------------------------------------------
+
+interface PersonaPickerRefs {
+  canvas: HTMLCanvasElement
+  /** ピッカー全体の外側コンテナ(選択変更時に再描画を起動するために保持) */
+  container: HTMLElement
+}
+
+interface PersonaPickerResult {
+  /** 現在の選択ペルソナ ID を返すゲッター */
+  getPersonaId: () => PersonaId
+  refs: PersonaPickerRefs
+}
+
+/**
+ * ペルソナピッカーを構築して親要素に追加する。
+ * title: 「あなた」「相手」などのラベル。
+ * defaultId: 初期選択ペルソナ。
+ * strokeColor/fillColor: レーダーチャートの色。
+ */
+function buildPersonaPicker(
+  parent: HTMLElement,
+  title: string,
+  defaultId: PersonaId,
+  strokeColor: string,
+  fillColor: string,
+): PersonaPickerResult {
+  let currentIndex = PERSONA_ORDER.indexOf(defaultId)
+  if (currentIndex < 0) currentIndex = 0
+
+  const container = el('div', 'persona-picker')
+
+  // --- タイトルラベル ---
+  container.appendChild(el('div', 'persona-picker-title', title))
+
+  // --- 名前行(◀ 名前 ▶) ---
+  const nameRow = el('div', 'persona-name-row')
+
+  const prevBtn = el('button', 'persona-nav-btn', '◀')
+  const nameEl = el('span', 'persona-name', '')
+  const nextBtn = el('button', 'persona-nav-btn', '▶')
+
+  nameRow.appendChild(prevBtn)
+  nameRow.appendChild(nameEl)
+  nameRow.appendChild(nextBtn)
+  container.appendChild(nameRow)
+
+  // --- レーダーチャート canvas ---
+  const canvas = document.createElement('canvas')
+  canvas.className = 'persona-radar'
+  canvas.width = 200
+  canvas.height = 200
+  container.appendChild(canvas)
+
+  // --- アーキタイプ + blurb ---
+  const archetypeEl = el('div', 'persona-archetype', '')
+  const blurbEl = el('div', 'persona-blurb', '')
+  container.appendChild(archetypeEl)
+  container.appendChild(blurbEl)
+
+  // --- ランダムボタン ---
+  const randomBtn = el('button', 'persona-random-btn', '🎲 ランダム')
+  container.appendChild(randomBtn)
+
+  parent.appendChild(container)
+
+  /** 表示・レーダーを現在インデックスに合わせて更新する */
+  function refresh(): void {
+    const id = PERSONA_ORDER[currentIndex]
+    const persona = PLAYER_PERSONAS[id]
+    nameEl.textContent = persona.name
+    archetypeEl.textContent = persona.archetype
+    blurbEl.textContent = persona.blurb
+    drawRadar(canvas, persona.ratings, strokeColor, fillColor)
+  }
+
+  prevBtn.addEventListener('click', () => {
+    currentIndex = (currentIndex - 1 + PERSONA_ORDER.length) % PERSONA_ORDER.length
+    refresh()
+  })
+
+  nextBtn.addEventListener('click', () => {
+    currentIndex = (currentIndex + 1) % PERSONA_ORDER.length
+    refresh()
+  })
+
+  randomBtn.addEventListener('click', () => {
+    currentIndex = Math.floor(Math.random() * PERSONA_ORDER.length)
+    refresh()
+  })
+
+  // 初期描画
+  refresh()
+
+  return {
+    getPersonaId: () => PERSONA_ORDER[currentIndex],
+    refs: { canvas, container },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +333,10 @@ export class UI {
     this.root = root
     this.handlers = handlers
 
-    // 3 画面を生成
-    this.menuScreen = this.buildMenuScreen()
+    // 3 画面を生成(メニュー画面はペルソナピッカーのゲッターを返す)
+    const menuResult = this.buildMenuScreen()
+    this.menuScreen = menuResult.screen
+
     this.hudScreen = el('div', 'screen-hud hidden')
     this.matchOverScreen = el('div', 'screen-match-over hidden')
 
@@ -391,7 +607,11 @@ export class UI {
   // メニュー画面構築
   // -------------------------------------------------------------------------
 
-  private buildMenuScreen(): HTMLElement {
+  private buildMenuScreen(): {
+    screen: HTMLElement
+    getPlayerPersona: () => PersonaId
+    getOpponentPersona: () => PersonaId
+  } {
     const screen = el('div', 'screen-menu')
 
     // タイトル
@@ -448,6 +668,33 @@ export class UI {
 
     screen.appendChild(options)
 
+    // --- ペルソナ選択セクション ---
+    const personaSection = el('div', 'persona-section')
+    personaSection.appendChild(el('div', 'persona-section-label', 'プレイヤータイプ'))
+
+    const personaRow = el('div', 'persona-row')
+
+    // 自分のピッカー(青系)
+    const playerPickerResult = buildPersonaPicker(
+      personaRow,
+      'あなた',
+      'federun',
+      '#4488ff',
+      'rgba(40,100,220,0.25)',
+    )
+
+    // 相手のピッカー(赤系)
+    const opponentPickerResult = buildPersonaPicker(
+      personaRow,
+      '相手',
+      'jokovin',
+      '#ff5544',
+      'rgba(220,60,40,0.25)',
+    )
+
+    personaSection.appendChild(personaRow)
+    screen.appendChild(personaSection)
+
     // 操作説明表
     const ctrlWrap = el('div', 'menu-controls')
     ctrlWrap.appendChild(el('div', 'controls-label', 'Controls'))
@@ -481,12 +728,18 @@ export class UI {
       const config: MatchConfig = {
         difficulty: this.selectedDifficulty,
         gamesToWin: this.selectedGamesToWin,
+        playerPersona: playerPickerResult.getPersonaId(),
+        opponentPersona: opponentPickerResult.getPersonaId(),
       }
       this.handlers.onStart(config)
     })
     screen.appendChild(startBtn)
 
-    return screen
+    return {
+      screen,
+      getPlayerPersona: playerPickerResult.getPersonaId,
+      getOpponentPersona: opponentPickerResult.getPersonaId,
+    }
   }
 
   // -------------------------------------------------------------------------

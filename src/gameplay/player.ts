@@ -8,6 +8,8 @@ import type {
   Controller,
   ControlContext,
   InputSource,
+  PersonaModifiers,
+  PersonaPhysique,
   PlayerView,
   ServeType,
   ServeMeterView,
@@ -128,6 +130,14 @@ export class PlayerController implements Controller {
   // InputSource(DI)
   private readonly input: InputSource
 
+  // ペルソナ倍率・身体(DI)。未指定相当(全1.0・右利き)では従来と同一挙動。
+  private readonly mods: PersonaModifiers
+  private readonly physique: PersonaPhysique
+  // ペルソナ倍率を反映した有効スタミナ上限(STAMINA_MAX * staminaMaxMul)
+  private readonly effStaminaMax: number
+  // ペルソナ倍率を反映した有効リーチ(REACH * reachMul)
+  private readonly effReach: number
+
   // 公開ビュー(毎フレーム更新)
   private _view: PlayerView = {
     side: 'player',
@@ -142,8 +152,15 @@ export class PlayerController implements Controller {
     swingSide: null,
   }
 
-  constructor(input: InputSource) {
+  constructor(input: InputSource, mods: PersonaModifiers, physique: PersonaPhysique) {
     this.input = input
+    this.mods = mods
+    this.physique = physique
+    this.effStaminaMax = STAMINA_MAX * mods.staminaMaxMul
+    this.effReach = REACH * mods.reachMul
+    // スタミナ初期値・ビューを有効上限で満タンに(中立倍率では STAMINA_MAX のまま)
+    this.stamina = this.effStaminaMax
+    this._view.stamina = this.stamina
   }
 
   // ---------------------------------------------------------------------------
@@ -172,12 +189,12 @@ export class PlayerController implements Controller {
    */
   /** ゲーム間のスタミナ全回復(GAME_DESIGN §6) */
   recoverFullStamina(): void {
-    this.stamina = STAMINA_MAX
+    this.stamina = this.effStaminaMax
   }
 
   resetForPoint(servingSide: Side, serveFromRight: boolean): void {
-    // スタミナ回復
-    this.stamina = Math.min(STAMINA_MAX, this.stamina + STAMINA_POINT_RECOVERY)
+    // スタミナ回復(上限はペルソナ補正済みの effStaminaMax)
+    this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_POINT_RECOVERY)
 
     // サーブサイドを保持(サーブ移動のクランプに使用)
     this.serveFromRight = serveFromRight
@@ -319,7 +336,9 @@ export class PlayerController implements Controller {
     inp: import('../types').InputState,
   ): void {
     const isSprinting = inp.sprint && this.stamina > 0
-    this.integrateVelocity(dt, inp, isSprinting ? SPRINT_SPEED : WALK_SPEED, 1)
+    // 最高速にペルソナ倍率 moveSpeedMul を乗算
+    const baseSpeed = (isSprinting ? SPRINT_SPEED : WALK_SPEED) * this.mods.moveSpeedMul
+    this.integrateVelocity(dt, inp, baseSpeed, 1)
 
     // 位置更新
     this.pos.x += this.vel.x * dt
@@ -401,7 +420,8 @@ export class PlayerController implements Controller {
       factor = CHARGE_MOVE_FACTOR
     }
 
-    const targetSpeed = (isSprinting ? SPRINT_SPEED : WALK_SPEED) * factor
+    // 最高速にペルソナ倍率 moveSpeedMul を乗算(移動係数 factor とは独立)
+    const targetSpeed = (isSprinting ? SPRINT_SPEED : WALK_SPEED) * this.mods.moveSpeedMul * factor
     this.integrateVelocity(dt, inp, targetSpeed, factor)
 
     // 位置更新
@@ -485,7 +505,7 @@ export class PlayerController implements Controller {
     const ballHeight = ball.pos.y
 
     const canHit =
-      hDist <= REACH &&
+      hDist <= this.effReach &&
       ballHeight <= REACH_HEIGHT &&
       ball.lastHitBy !== this.side &&
       ball.inPlay
@@ -519,11 +539,15 @@ export class PlayerController implements Controller {
       quality,
       charge: this.charge,
       incomingSpeed,
+      // 自分のペルソナ倍率を添付(ソルバが初速・狙い等に乗算)
+      mods: this.mods,
     })
 
-    // swingSide: 打点(ボール)がプレイヤーから見て利き手側(player は世界 +x 側)なら
-    // 'fore'、逆なら 'back'
-    this.swingSide = ball.pos.x >= this.pos.x ? 'fore' : 'back'
+    // swingSide: 打点(ボール)がプレイヤーから見て利き手側(右利きの player は
+    // 世界 +x 側)なら 'fore'、逆なら 'back'。左利きは不等号を反転する。
+    const ballOnRight = ball.pos.x >= this.pos.x
+    const foreSide = this.physique.handedness === 'left' ? !ballOnRight : ballOnRight
+    this.swingSide = foreSide ? 'fore' : 'back'
 
     // スイング状態更新 + チャージ解除 + インパクト硬直開始
     this.swingState = 'swing'
@@ -599,18 +623,21 @@ export class PlayerController implements Controller {
   // 品質計算ヘルパー
   // ---------------------------------------------------------------------------
 
-  /** 距離係数: SWEET_DIST 以内で 1.0、REACH で 0.35 へ線形減衰 */
+  /** 距離係数: SWEET_DIST 以内で 1.0、effReach で 0.35 へ線形減衰 */
   private calcDistFactor(hDist: number): number {
+    // REACH 上限はペルソナ補正済みの effReach を使う(中立倍率では従来と同一)
+    const reach = this.effReach
     if (hDist <= SWEET_DIST) return 1.0
-    if (hDist >= REACH) return QUALITY_MIN
-    // SWEET_DIST..REACH を 1.0..QUALITY_MIN に線形補間
-    const t = (hDist - SWEET_DIST) / (REACH - SWEET_DIST)
+    if (hDist >= reach) return QUALITY_MIN
+    // SWEET_DIST..effReach を 1.0..QUALITY_MIN に線形補間
+    const t = (hDist - SWEET_DIST) / (reach - SWEET_DIST)
     return 1.0 - t * (1.0 - QUALITY_MIN)
   }
 
   /** スタミナ係数: 30% 以上で 1.0、0% で STAMINA_QUALITY_FLOOR へ線形減衰 */
   private calcStaminaFactor(): number {
-    const pct = this.stamina / STAMINA_MAX
+    // 低下閾値判定は有効上限 effStaminaMax を基準にする(中立倍率では従来と同一)
+    const pct = this.stamina / this.effStaminaMax
     if (pct >= STAMINA_LOW_THRESHOLD / STAMINA_MAX) return 1.0
     // 0..STAMINA_LOW_THRESHOLD を STAMINA_QUALITY_FLOOR..1.0 に線形補間
     const t = pct / (STAMINA_LOW_THRESHOLD / STAMINA_MAX)
@@ -623,9 +650,11 @@ export class PlayerController implements Controller {
 
   private updateStamina(dt: number, sprinting: boolean): void {
     if (sprinting) {
-      this.stamina = Math.max(0, this.stamina - STAMINA_SPRINT_DRAIN * dt)
+      // 消耗にペルソナ倍率 staminaDrainMul を乗算
+      this.stamina = Math.max(0, this.stamina - STAMINA_SPRINT_DRAIN * this.mods.staminaDrainMul * dt)
     } else {
-      this.stamina = Math.min(STAMINA_MAX, this.stamina + STAMINA_REGEN * dt)
+      // 回復にペルソナ倍率 staminaRegenMul を乗算。上限は effStaminaMax
+      this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_REGEN * this.mods.staminaRegenMul * dt)
     }
   }
 

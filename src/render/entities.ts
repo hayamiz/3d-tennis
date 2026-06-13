@@ -4,10 +4,11 @@
 //        + 長く太い残像トレイル(加算合成)+ 着地予測リング + 強調グラウンドマーカー
 // プレイヤー/AI: 頭・胴体・腰・両腕(上腕+前腕)・両脚を持つローポリ人型。
 //        利き手(右)にラケット。フォア/バックの振り分け・チャージテイクバック・走り footwork。
+//        ペルソナの体格・外見・チームカラーでパラメータ化(IMPROVEMENTS §3.6-3.7)。
 // =============================================================================
 import * as THREE from 'three'
-import type { WorldView, PlayerView } from '../types'
-import { BALL_RADIUS, BALL_VISUAL_SCALE, CHARGE_MAX } from '../constants'
+import type { WorldView, PlayerView, Side, PersonaPhysique, PersonaAppearance } from '../types'
+import { BALL_RADIUS, BALL_VISUAL_SCALE, CHARGE_MAX, BASE_HEIGHT_M, TEAM_PALETTE } from '../constants'
 
 // ボール描画半径(視認性のため実寸より大きく描く)
 const BALL_DRAW_RADIUS = BALL_RADIUS * BALL_VISUAL_SCALE
@@ -25,24 +26,38 @@ const HALO_RADIUS = BALL_DRAW_RADIUS * 2.8
 // 着地予測リングの基準半径(m)
 const LANDING_RING_RADIUS = 0.4
 
-// プレイヤーモデルのスケール定数(m)
-const HIP_Y = 0.92 // 腰(脚と胴の境)の高さ
-const TORSO_H = 0.52 // 胴体の高さ
-const TORSO_R = 0.16 // 胴体の半径
-const HIP_R = 0.17 // 腰の半径
-const HEAD_R = 0.13 // 頭半径
-const NECK_H = 0.06 // 首の高さ
-const SHOULDER_Y = HIP_Y + TORSO_H // 肩の高さ
-const SHOULDER_X = 0.19 // 肩の左右オフセット
-const UPPER_ARM_LEN = 0.26 // 上腕長
-const FORE_ARM_LEN = 0.24 // 前腕長
-const ARM_R = 0.045 // 腕の太さ
-const HIP_X = 0.1 // 股関節の左右オフセット
-const THIGH_LEN = 0.46 // 大腿長
-const SHIN_LEN = 0.44 // 下腿長
-const LEG_R = 0.06 // 脚の太さ
-const RACKET_RING_R = 0.13 // ラケットフレーム半径
+// ---------------------------------------------------------------------------
+// プレイヤーモデルの基準寸法(m)。これらが「r=3(標準)時の形状」。
+// 実際には PersonaPhysique(heightM/build)をもとにスケール値を求め、
+// ジオメトリ生成時に乗算することで体格差を出す。
+// ---------------------------------------------------------------------------
+const HIP_Y       = 0.92  // 腰(脚と胴の境)の高さ
+const TORSO_H     = 0.52  // 胴体の高さ
+const TORSO_R     = 0.16  // 胴体の半径
+const HIP_R       = 0.17  // 腰の半径
+const HEAD_R      = 0.13  // 頭半径
+const NECK_H      = 0.06  // 首の高さ
+const SHOULDER_Y  = HIP_Y + TORSO_H  // 肩の高さ
+const SHOULDER_X  = 0.19  // 肩の左右オフセット
+const UPPER_ARM_LEN = 0.26  // 上腕長
+const FORE_ARM_LEN  = 0.24  // 前腕長
+const ARM_R       = 0.045 // 腕の太さ
+const HIP_X       = 0.1   // 股関節の左右オフセット
+const THIGH_LEN   = 0.46  // 大腿長
+const SHIN_LEN    = 0.44  // 下腿長
+const LEG_R       = 0.06  // 脚の太さ
+const RACKET_RING_R    = 0.13  // ラケットフレーム半径
 const RACKET_HANDLE_LEN = 0.22 // グリップ長
+
+// ---------------------------------------------------------------------------
+// 体格(build)→ 太さスケール係数。胴・手足の半径系に乗算する。
+// slim は細く、stocky は太く、athletic は基準(1.0)。
+// ---------------------------------------------------------------------------
+const BUILD_GIRTH: Record<PersonaPhysique['build'], number> = {
+  slim:     0.82,
+  athletic: 1.0,
+  stocky:   1.22,
+}
 
 /** トレイル要素(プールで使い回す) */
 interface TrailPoint {
@@ -291,9 +306,25 @@ function makeRadialTexture(colorHex: number): THREE.Texture {
   return tex
 }
 
+// ---------------------------------------------------------------------------
+// CharacterEntity 構築用オプション型
+// ---------------------------------------------------------------------------
+export interface CharacterEntityOptions {
+  /** 陣営(1P=player/青系、2P=opponent/赤系) */
+  team: Side
+  /** 体格パラメータ(身長・体格・利き手) */
+  physique: PersonaPhysique
+  /** 外見パラメータ(髪型・袖・アクセント色) */
+  appearance: PersonaAppearance
+}
+
 /**
  * プレイヤー / AI キャラクターのエンティティ。
  * 頭・胴体・腰・両腕(上腕+前腕)・両脚を持つ人型。利き手(右)にラケット。
+ *
+ * コンストラクタは `{ team, physique, appearance }` を受け取り、
+ * チームカラー・体格(身長/体格)・外見(髪/袖/アクセント)を反映する。
+ * ARCHITECTURE §12 / IMPROVEMENTS §3.6-3.7 参照。
  */
 export class CharacterEntity {
   readonly group: THREE.Group
@@ -326,31 +357,63 @@ export class CharacterEntity {
   private footCycle = 0 // 走りモーションの位相
   private chargeShake = 0 // オーバーチャージの震え位相
 
-  constructor(scene: THREE.Scene, isPlayer: boolean) {
+  constructor(scene: THREE.Scene, opts: CharacterEntityOptions) {
     this.group = new THREE.Group()
     scene.add(this.group)
 
-    // チーム色: プレイヤー=青系、AI=赤系
-    const bodyColor = isPlayer ? 0x2255cc : 0xcc2222
-    const limbColor = isPlayer ? 0x1a3f99 : 0x991a1a
-    const skinColor = 0xf0d090
+    // -------------------------------------------------------------------------
+    // スケール値の計算
+    // heightScale: heightM/BASE_HEIGHT_M を縦方向スケール比として全パーツ高さに乗算
+    // girthScale: build に基づく太さスケール(ジオメトリ半径系に乗算)
+    // -------------------------------------------------------------------------
+    const heightScale = opts.physique.heightM / BASE_HEIGHT_M
+    const girthScale  = BUILD_GIRTH[opts.physique.build]
 
-    const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor })
-    const limbMat = new THREE.MeshLambertMaterial({ color: limbColor })
-    const skinMat = new THREE.MeshLambertMaterial({ color: skinColor })
+    // スケール後の局所寸法
+    const hipY      = HIP_Y      * heightScale
+    const torsoH    = TORSO_H    * heightScale
+    const torsoR    = TORSO_R    * girthScale
+    const hipR      = HIP_R      * girthScale
+    const headR     = HEAD_R     * heightScale
+    const neckH     = NECK_H     * heightScale
+    const shoulderY = hipY + torsoH
+    const shoulderX = SHOULDER_X * girthScale
+    const upperArmLen = UPPER_ARM_LEN * heightScale
+    const foreArmLen  = FORE_ARM_LEN  * heightScale
+    const armR      = ARM_R     * girthScale
+    const hipX      = HIP_X     * girthScale
+    const thighLen  = THIGH_LEN * heightScale
+    const shinLen   = SHIN_LEN  * heightScale
+    const legR      = LEG_R     * girthScale
+    const racketRingR    = RACKET_RING_R     // ラケットはモデル寸法に依存しないため固定
+    const racketHandleLen = RACKET_HANDLE_LEN // 同上
+
+    // -------------------------------------------------------------------------
+    // チームカラー: TEAM_PALETTE[team] から body/limb/trim を取得
+    // -------------------------------------------------------------------------
+    const palette  = TEAM_PALETTE[opts.team]
+    const skinColor  = 0xf0d090
+    const accentColor = opts.appearance.accent
+
+    const bodyMat   = new THREE.MeshLambertMaterial({ color: palette.body })
+    const limbMat   = new THREE.MeshLambertMaterial({ color: palette.limb })
+    const skinMat   = new THREE.MeshLambertMaterial({ color: skinColor })
+    const accentMat = new THREE.MeshLambertMaterial({ color: accentColor })
+    // 上腕の素材: sleeved=ユニ色(limb)、sleeveless=肌色
+    const upperArmMat = opts.appearance.sleeves === 'sleeved' ? limbMat : skinMat
 
     // -------------------------------------------------------------------------
     // 胴体・腰
     // -------------------------------------------------------------------------
-    const torsoGeo = new THREE.CylinderGeometry(TORSO_R * 0.85, TORSO_R, TORSO_H, 12)
+    const torsoGeo = new THREE.CylinderGeometry(torsoR * 0.85, torsoR, torsoH, 12)
     this.torso = new THREE.Mesh(torsoGeo, bodyMat)
-    this.torso.position.y = HIP_Y + TORSO_H / 2
+    this.torso.position.y = hipY + torsoH / 2
     this.torso.castShadow = true
     this.group.add(this.torso)
 
-    const hipsGeo = new THREE.SphereGeometry(HIP_R, 12, 8)
+    const hipsGeo = new THREE.SphereGeometry(hipR, 12, 8)
     this.hips = new THREE.Mesh(hipsGeo, bodyMat)
-    this.hips.position.y = HIP_Y
+    this.hips.position.y = hipY
     this.hips.scale.set(1, 0.7, 0.8)
     this.hips.castShadow = true
     this.group.add(this.hips)
@@ -359,79 +422,191 @@ export class CharacterEntity {
     // 首 + 頭(Group でまとめる)
     // -------------------------------------------------------------------------
     this.head = new THREE.Group()
-    this.head.position.y = SHOULDER_Y
+    this.head.position.y = shoulderY
     this.group.add(this.head)
 
-    const neckGeo = new THREE.CylinderGeometry(0.05, 0.06, NECK_H, 8)
+    const neckGeo = new THREE.CylinderGeometry(0.05 * heightScale, 0.06 * heightScale, neckH, 8)
     const neck = new THREE.Mesh(neckGeo, skinMat)
-    neck.position.y = NECK_H / 2
+    neck.position.y = neckH / 2
     this.head.add(neck)
 
-    const headGeo = new THREE.SphereGeometry(HEAD_R, 14, 10)
+    const headGeo = new THREE.SphereGeometry(headR, 14, 10)
     const headMesh = new THREE.Mesh(headGeo, skinMat)
-    headMesh.position.y = NECK_H + HEAD_R
+    headMesh.position.y = neckH + headR
     headMesh.castShadow = true
     this.head.add(headMesh)
 
+    // 髪型フィーチャーを headMesh の位置基準で追加
+    this.buildHair(opts.appearance.hair, headR, neckH, accentMat, accentColor)
+
     // -------------------------------------------------------------------------
-    // 両腕(利き手=右=世界 +x 側を肩オフセット +SHOULDER_X で表現)
+    // 両腕(利き手=右=世界 +x 側を肩オフセット +shoulderX で表現)
     // 肩ピボット(group)→上腕メッシュ(下向き)→肘ピボット(下端)→前腕メッシュ
     // -------------------------------------------------------------------------
-    const rArm = this.buildArm(limbMat, skinMat, +SHOULDER_X)
+    const rArm = this.buildArm(upperArmMat, skinMat, +shoulderX, shoulderY, upperArmLen, foreArmLen, armR)
     this.rShoulder = rArm.shoulder
-    this.rElbow = rArm.elbow
+    this.rElbow    = rArm.elbow
     this.group.add(this.rShoulder)
 
-    const lArm = this.buildArm(limbMat, skinMat, -SHOULDER_X)
+    const lArm = this.buildArm(upperArmMat, skinMat, -shoulderX, shoulderY, upperArmLen, foreArmLen, armR)
     this.lShoulder = lArm.shoulder
-    this.lElbow = lArm.elbow
+    this.lElbow    = lArm.elbow
     this.group.add(this.lShoulder)
+
+    // リストバンド(アクセント色の細い帯)を前腕の先端近くに追加
+    this.buildWristband(this.rElbow, foreArmLen, armR, accentMat)
+    this.buildWristband(this.lElbow, foreArmLen, armR, accentMat)
 
     // 利き手(前腕の先)にラケット
     this.racketPivot = new THREE.Group()
-    this.racketPivot.position.y = -FORE_ARM_LEN // 前腕の先端(手)
+    this.racketPivot.position.y = -foreArmLen // 前腕の先端(手)
     this.rElbow.add(this.racketPivot)
-    this.buildRacket(this.racketPivot)
+    this.buildRacket(this.racketPivot, racketRingR, racketHandleLen, accentColor)
 
     // -------------------------------------------------------------------------
     // 両脚: 股関節ピボット→大腿(下向き)→膝ピボット→下腿
     // -------------------------------------------------------------------------
-    const rLeg = this.buildLeg(limbMat, +HIP_X)
-    this.rHip = rLeg.hip
+    const rLeg = this.buildLeg(limbMat, accentMat, +hipX, hipY, thighLen, shinLen, legR)
+    this.rHip  = rLeg.hip
     this.rKnee = rLeg.knee
     this.group.add(this.rHip)
 
-    const lLeg = this.buildLeg(limbMat, -HIP_X)
-    this.lHip = lLeg.hip
+    const lLeg = this.buildLeg(limbMat, accentMat, -hipX, hipY, thighLen, shinLen, legR)
+    this.lHip  = lLeg.hip
     this.lKnee = lLeg.knee
     this.group.add(this.lHip)
+
+    // -------------------------------------------------------------------------
+    // 左利き: y 軸まわりに鏡像化(利き腕を左側に)。
+    // group.scale.x = -1 を使うと内部の法線が反転して見た目が崩れるため、
+    // y 軸 180° 回転で鏡像を実現する。
+    // -------------------------------------------------------------------------
+    if (opts.physique.handedness === 'left') {
+      this.group.rotation.y = Math.PI
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 髪型フィーチャーの構築
+  // ---------------------------------------------------------------------------
+  /**
+   * 髪型に応じたメッシュを head グループへ追加する。
+   * bald は何も追加しない(肌色のまま)。
+   */
+  private buildHair(
+    hair: PersonaAppearance['hair'],
+    headR: number,
+    neckH: number,
+    accentMat: THREE.MeshLambertMaterial,
+    accentColor: number,
+  ): void {
+    const hairColor  = 0x2a1a08 // 黒茶の髪色(共通)
+    const hairMat    = new THREE.MeshLambertMaterial({ color: hairColor })
+    const headTopY   = neckH + headR * 2  // 頭頂の y 座標(head グループ内)
+
+    switch (hair) {
+      case 'short': {
+        // 短髪: 頭部上半分を覆う薄い半球キャップ
+        const capGeo = new THREE.SphereGeometry(headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5)
+        const capMesh = new THREE.Mesh(capGeo, hairMat)
+        capMesh.position.y = neckH + headR
+        this.head.add(capMesh)
+        break
+      }
+      case 'bald': {
+        // 禿げ: 髪メッシュなし(肌色のまま)
+        break
+      }
+      case 'headband': {
+        // ヘッドバンド: 頭部赤道付近にトーラス(アクセント色)
+        const torusR  = headR * 0.96
+        const tubeR   = headR * 0.10
+        const bandGeo = new THREE.TorusGeometry(torusR, tubeR, 8, 24)
+        const bandMesh = new THREE.Mesh(bandGeo, accentMat)
+        // 頭頂から少し下(赤道付近)に配置し、xz 平面に水平に
+        bandMesh.position.y = neckH + headR + headR * 0.18
+        bandMesh.rotation.x = Math.PI / 2
+        this.head.add(bandMesh)
+        break
+      }
+      case 'long': {
+        // 長髪: 短髪キャップ + 後頭部に箱状の塊
+        const capGeo = new THREE.SphereGeometry(headR * 1.04, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5)
+        const capMesh = new THREE.Mesh(capGeo, hairMat)
+        capMesh.position.y = neckH + headR
+        this.head.add(capMesh)
+
+        // 後頭部のポニーテール塊(小さな箱/球)
+        const tailGeo  = new THREE.BoxGeometry(headR * 0.55, headR * 0.65, headR * 0.45)
+        const tailMesh = new THREE.Mesh(tailGeo, hairMat)
+        tailMesh.position.set(0, neckH + headR * 0.9, -headR * 1.0)
+        this.head.add(tailMesh)
+        break
+      }
+      case 'cap': {
+        // キャップ: 半球ブリム + 前つば(薄い箱)
+        const capGeo  = new THREE.SphereGeometry(headR * 1.06, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52)
+        // キャップの色はアクセント色
+        const capMat  = new THREE.MeshLambertMaterial({ color: accentColor })
+        const capMesh = new THREE.Mesh(capGeo, capMat)
+        capMesh.position.y = neckH + headR
+        this.head.add(capMesh)
+
+        // つば: 薄い円盤
+        const brimGeo  = new THREE.CylinderGeometry(headR * 1.35, headR * 1.35, 0.025, 16)
+        const brimMesh = new THREE.Mesh(brimGeo, capMat)
+        brimMesh.position.set(0, neckH + headR * 0.5, headR * 0.5)
+        this.head.add(brimMesh)
+        break
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // リストバンドの構築(アクセント色の細いリング)
+  // ---------------------------------------------------------------------------
+  private buildWristband(
+    elbowGroup: THREE.Group,
+    foreArmLen: number,
+    armR: number,
+    accentMat: THREE.MeshLambertMaterial,
+  ): void {
+    // 前腕の先端(肘ピボットから -foreArmLen)近くに細いリングを追加
+    const bandGeo  = new THREE.CylinderGeometry(armR * 1.15, armR * 1.15, foreArmLen * 0.12, 10)
+    const bandMesh = new THREE.Mesh(bandGeo, accentMat)
+    bandMesh.position.y = -(foreArmLen * 0.88)
+    elbowGroup.add(bandMesh)
   }
 
   /** 片腕を組み立てて肩・肘ピボットを返す。shoulderX は肩の左右オフセット */
   private buildArm(
-    limbMat: THREE.Material,
+    upperArmMat: THREE.Material,
     skinMat: THREE.Material,
     shoulderX: number,
+    shoulderY: number,
+    upperArmLen: number,
+    foreArmLen: number,
+    armR: number,
   ): { shoulder: THREE.Group; elbow: THREE.Group } {
     const shoulder = new THREE.Group()
-    shoulder.position.set(shoulderX, SHOULDER_Y - 0.04, 0)
+    shoulder.position.set(shoulderX, shoulderY - 0.04, 0)
 
-    // 上腕(肩から下向き)
-    const upperGeo = new THREE.CylinderGeometry(ARM_R, ARM_R * 0.9, UPPER_ARM_LEN, 8)
-    const upper = new THREE.Mesh(upperGeo, limbMat)
-    upper.position.y = -UPPER_ARM_LEN / 2
+    // 上腕(肩から下向き)。sleeveless 時は skinMat が渡される。
+    const upperGeo = new THREE.CylinderGeometry(armR, armR * 0.9, upperArmLen, 8)
+    const upper = new THREE.Mesh(upperGeo, upperArmMat)
+    upper.position.y = -upperArmLen / 2
     upper.castShadow = true
     shoulder.add(upper)
 
     // 肘ピボット(上腕の先端)
     const elbow = new THREE.Group()
-    elbow.position.y = -UPPER_ARM_LEN
+    elbow.position.y = -upperArmLen
     shoulder.add(elbow)
 
     // 前腕(肘から下向き)
-    const foreGeo = new THREE.CylinderGeometry(ARM_R * 0.9, ARM_R * 0.8, FORE_ARM_LEN, 8)
+    const foreGeo = new THREE.CylinderGeometry(armR * 0.9, armR * 0.8, foreArmLen, 8)
     const fore = new THREE.Mesh(foreGeo, skinMat)
-    fore.position.y = -FORE_ARM_LEN / 2
+    fore.position.y = -foreArmLen / 2
     fore.castShadow = true
     elbow.add(fore)
 
@@ -441,42 +616,53 @@ export class CharacterEntity {
   /** 片脚を組み立てて股・膝ピボットを返す */
   private buildLeg(
     limbMat: THREE.Material,
+    accentMat: THREE.MeshLambertMaterial,
     hipX: number,
+    hipY: number,
+    thighLen: number,
+    shinLen: number,
+    legR: number,
   ): { hip: THREE.Group; knee: THREE.Group } {
     const hip = new THREE.Group()
-    hip.position.set(hipX, HIP_Y, 0)
+    hip.position.set(hipX, hipY, 0)
 
-    const thighGeo = new THREE.CylinderGeometry(LEG_R, LEG_R * 0.85, THIGH_LEN, 8)
+    const thighGeo = new THREE.CylinderGeometry(legR, legR * 0.85, thighLen, 8)
     const thigh = new THREE.Mesh(thighGeo, limbMat)
-    thigh.position.y = -THIGH_LEN / 2
+    thigh.position.y = -thighLen / 2
     thigh.castShadow = true
     hip.add(thigh)
 
     const knee = new THREE.Group()
-    knee.position.y = -THIGH_LEN
+    knee.position.y = -thighLen
     hip.add(knee)
 
-    const shinGeo = new THREE.CylinderGeometry(LEG_R * 0.85, LEG_R * 0.7, SHIN_LEN, 8)
+    const shinGeo = new THREE.CylinderGeometry(legR * 0.85, legR * 0.7, shinLen, 8)
     const shin = new THREE.Mesh(shinGeo, limbMat)
-    shin.position.y = -SHIN_LEN / 2
+    shin.position.y = -shinLen / 2
     shin.castShadow = true
     knee.add(shin)
 
-    // 足(小さな箱)
-    const footGeo = new THREE.BoxGeometry(LEG_R * 1.6, 0.05, LEG_R * 3)
-    const foot = new THREE.Mesh(footGeo, limbMat)
-    foot.position.set(0, -SHIN_LEN + 0.02, LEG_R * 0.8)
+    // 足(小さな箱)。シューズのライン部分にアクセント色を一点追加。
+    const footGeo  = new THREE.BoxGeometry(legR * 1.6, 0.05, legR * 3)
+    const foot     = new THREE.Mesh(footGeo, limbMat)
+    foot.position.set(0, -shinLen + 0.02, legR * 0.8)
     knee.add(foot)
+
+    // シューズのアクセントライン(薄いスラブ)
+    const shoeLineGeo  = new THREE.BoxGeometry(legR * 1.7, 0.018, legR * 0.6)
+    const shoeLine     = new THREE.Mesh(shoeLineGeo, accentMat)
+    shoeLine.position.set(0, -shinLen + 0.04, legR * 1.3)
+    knee.add(shoeLine)
 
     return { hip, knee }
   }
 
-  /** ラケットを pivot 配下に組み立てる */
-  private buildRacket(pivot: THREE.Group): void {
-    const frameMat = new THREE.MeshLambertMaterial({ color: 0xddbb44 })
+  /** ラケットを pivot 配下に組み立てる。accentColor はガットの発光色に使う */
+  private buildRacket(pivot: THREE.Group, racketRingR: number, racketHandleLen: number, accentColor: number): void {
+    const frameMat  = new THREE.MeshLambertMaterial({ color: 0xddbb44 })
     const handleMat = new THREE.MeshLambertMaterial({ color: 0x553311 })
     const stringMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: accentColor !== 0x000000 ? accentColor : 0xffffff, // accent=黒の場合は白ガット
       transparent: true,
       opacity: 0.25,
       side: THREE.DoubleSide,
@@ -484,21 +670,21 @@ export class CharacterEntity {
     })
 
     // グリップ(手から下向きに伸ばす)
-    const handleGeo = new THREE.CylinderGeometry(0.018, 0.02, RACKET_HANDLE_LEN, 8)
+    const handleGeo = new THREE.CylinderGeometry(0.018, 0.02, racketHandleLen, 8)
     const handle = new THREE.Mesh(handleGeo, handleMat)
-    handle.position.y = -RACKET_HANDLE_LEN / 2
+    handle.position.y = -racketHandleLen / 2
     pivot.add(handle)
 
     // フレーム(リング)はグリップの先
-    const frameGeo = new THREE.TorusGeometry(RACKET_RING_R, 0.014, 6, 22)
+    const frameGeo = new THREE.TorusGeometry(racketRingR, 0.014, 6, 22)
     const frame = new THREE.Mesh(frameGeo, frameMat)
-    frame.position.y = -RACKET_HANDLE_LEN - RACKET_RING_R
+    frame.position.y = -racketHandleLen - racketRingR
     pivot.add(frame)
 
     // ガット面(半透明の円)
-    const faceGeo = new THREE.CircleGeometry(RACKET_RING_R * 0.92, 20)
+    const faceGeo = new THREE.CircleGeometry(racketRingR * 0.92, 20)
     const face = new THREE.Mesh(faceGeo, stringMat)
-    face.position.y = -RACKET_HANDLE_LEN - RACKET_RING_R
+    face.position.y = -racketHandleLen - racketRingR
     pivot.add(face)
   }
 
@@ -511,7 +697,10 @@ export class CharacterEntity {
     const speed = Math.sqrt(view.vel.x ** 2 + view.vel.z ** 2)
     if (speed > 0.5) {
       const dir = Math.atan2(view.vel.x, view.vel.z)
-      this.group.rotation.y = THREE.MathUtils.lerp(this.group.rotation.y, dir, 8 * dt)
+      // 左利きの場合は group.rotation.y が Math.PI にオフセットされているため、
+      // 進行方向角度に Math.PI を加算して向きを合わせる
+      const baseRot = this.group.scale.x < 0 ? Math.PI : 0
+      this.group.rotation.y = THREE.MathUtils.lerp(this.group.rotation.y, dir + baseRot, 8 * dt)
       const tilt = Math.min(speed / 8.0, 1.0) * 0.12
       this.group.rotation.z = THREE.MathUtils.lerp(
         this.group.rotation.z,
@@ -645,17 +834,17 @@ export class CharacterEntity {
     if (p < 0.3) {
       // テイクバック(深く引く)
       const u = p / 0.3
-      arm = THREE.MathUtils.lerp(0.2, 1.0, u)
+      arm   = THREE.MathUtils.lerp(0.2, 1.0, u)
       torso = THREE.MathUtils.lerp(0, 0.6, u)
     } else if (p < 0.6) {
       // フォワードスイング(一気に振り抜く)
       const u = (p - 0.3) / 0.3
-      arm = THREE.MathUtils.lerp(1.0, -0.9, u)
+      arm   = THREE.MathUtils.lerp(1.0, -0.9, u)
       torso = THREE.MathUtils.lerp(0.6, -0.4, u)
     } else {
       // フォロースルー(振り切って戻す)
       const u = (p - 0.6) / 0.4
-      arm = THREE.MathUtils.lerp(-0.9, -0.3, u)
+      arm   = THREE.MathUtils.lerp(-0.9, -0.3, u)
       torso = THREE.MathUtils.lerp(-0.4, -0.1, u)
     }
 

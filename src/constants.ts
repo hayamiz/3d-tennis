@@ -2,7 +2,16 @@
 // 定数(凍結) — コート寸法・物理定数・ゲームパラメータ
 // 詳細仕様は docs/ARCHITECTURE.md / docs/GAME_DESIGN.md を参照。
 // =============================================================================
-import type { AIProfile, Difficulty, ServeType, ShotType } from './types'
+import type {
+  AIProfile,
+  Difficulty,
+  Persona,
+  PersonaId,
+  PersonaModifiers,
+  PersonaRatings,
+  ServeType,
+  ShotType,
+} from './types'
 
 // ---------------------------------------------------------------------------
 // コート寸法(m)。ネットが z=0、プレイヤー側が z>0。
@@ -278,3 +287,115 @@ export const HOME_POS_Z = COURT_HALF_LENGTH + 1.0
 export const BANNER_SEC = 1.8 // pointOver の表示時間
 export const AI_SERVE_DELAY_MIN = 0.8
 export const AI_SERVE_DELAY_MAX = 1.2
+
+// ---------------------------------------------------------------------------
+// プレイヤーペルソナ(docs/GAME_DESIGN.md §12 / docs/IMPROVEMENTS.md §3)
+// 能力値(各1..5)・身体・外見の定義。能力値→倍率は personaModifiers() で導出する。
+// ---------------------------------------------------------------------------
+
+/** モデルスケールの基準身長(m)。heightM/この値 が縦スケール比になる */
+export const BASE_HEIGHT_M = 1.83
+
+/** チームカラー(1P=青系 / 2P=赤系)。ペルソナの外見とは独立した陣営識別 */
+export const TEAM_PALETTE = {
+  player: { body: 0x2255cc, limb: 0x1a3f99, trim: 0x6699ff }, // 1P 青系
+  opponent: { body: 0xcc2222, limb: 0x991a1a, trim: 0xff7766 }, // 2P 赤系
+} as const
+
+export const PLAYER_PERSONAS: Record<PersonaId, Persona> = {
+  sambrant: {
+    id: 'sambrant',
+    name: 'ピート・サンブラント',
+    archetype: 'ビッグサーバー / サーブ&ボレー',
+    blurb: '一撃必殺のフラットサーブと前への決定力。長い打ち合い・粘りには弱い。',
+    ratings: { serve: 5, power: 4, spin: 2, speed: 3, stamina: 3, finesse: 4 },
+    physique: { heightM: 1.88, build: 'athletic', handedness: 'right' },
+    appearance: { hair: 'short', sleeves: 'sleeved', accent: 0xffffff },
+  },
+  agachi: {
+    id: 'agachi',
+    name: 'アンドレ・アガチ',
+    archetype: 'リターナー / アグレッシブ・ベースライナー',
+    blurb: '速球を差し込まれず叩き返すリターンとフラット強打。ネット・タッチが苦手。',
+    ratings: { serve: 3, power: 5, spin: 3, speed: 3, stamina: 4, finesse: 2 },
+    physique: { heightM: 1.8, build: 'athletic', handedness: 'right' },
+    appearance: { hair: 'bald', sleeves: 'sleeved', accent: 0xff8a3d },
+  },
+  jokovin: {
+    id: 'jokovin',
+    name: 'ノヴァ・ジョコヴィン',
+    archetype: 'カウンターパンチャー / オールラウンダー',
+    blurb: '最高の安定と粘り、終盤も落ちないスタミナ。一撃の決定力に欠ける。',
+    ratings: { serve: 2, power: 3, spin: 5, speed: 4, stamina: 5, finesse: 3 },
+    physique: { heightM: 1.88, build: 'slim', handedness: 'right' },
+    appearance: { hair: 'headband', sleeves: 'sleeved', accent: 0xc6ff3d },
+  },
+  nishigoori: {
+    id: 'nishigoori',
+    name: 'ケイ・ニシゴオリ',
+    archetype: 'スピードスター / オールコート・テクニシャン',
+    blurb: '圧倒的な機動力と多彩なタッチ。スタミナが低く長期戦・高い打点に弱い。',
+    ratings: { serve: 2, power: 3, spin: 3, speed: 5, stamina: 2, finesse: 5 },
+    physique: { heightM: 1.78, build: 'slim', handedness: 'right' },
+    appearance: { hair: 'short', sleeves: 'sleeved', accent: 0xffd23d },
+  },
+  nadau: {
+    id: 'nadau',
+    name: 'ラファ・ナダウ',
+    archetype: 'ヘビートップスピン / グラインダー',
+    blurb: '重い順回転と無尽蔵のスタミナで削り倒す。タッチ・ネット・サーブは平凡。',
+    ratings: { serve: 2, power: 4, spin: 5, speed: 3, stamina: 5, finesse: 2 },
+    physique: { heightM: 1.85, build: 'stocky', handedness: 'left' },
+    appearance: { hair: 'long', sleeves: 'sleeveless', accent: 0x33cc66 },
+  },
+  federun: {
+    id: 'federun',
+    name: 'ロジャー・フェデルン',
+    archetype: 'オールラウンド / 攻撃的万能型',
+    blurb: '良いサーブ・速い展開・多彩なタッチで主導権を握る。長い我慢比べで消耗。',
+    ratings: { serve: 4, power: 4, spin: 2, speed: 4, stamina: 3, finesse: 4 },
+    physique: { heightM: 1.85, build: 'athletic', handedness: 'right' },
+    appearance: { hair: 'headband', sleeves: 'sleeved', accent: 0x222222 },
+  },
+}
+
+/** ペルソナ選択の巡回順(UI のピッカー順) */
+export const PERSONA_ORDER: PersonaId[] = [
+  'sambrant',
+  'agachi',
+  'jokovin',
+  'nishigoori',
+  'nadau',
+  'federun',
+]
+
+/**
+ * 能力値(1..5)→ 倍率を導出する(docs/ARCHITECTURE.md §6.5)。
+ * r=3 を平均(おおむね現状付近)、最強でも 1.1〜1.3 倍程度に抑える。
+ */
+export function personaModifiers(r: PersonaRatings): PersonaModifiers {
+  return {
+    serveSpeedMul: 0.92 + 0.04 * r.serve,
+    serveFaultMul: 1.3 - 0.12 * r.serve,
+    shotSpeedMul: 0.9 + 0.045 * r.power,
+    chargeGainMul: 0.8 + 0.1 * r.power,
+    aimNoiseMul: 1.3 - 0.12 * r.spin,
+    netMarginMul: 0.8 + 0.1 * r.spin,
+    returnSolidMul: 1.3 - 0.12 * r.spin,
+    moveSpeedMul: 0.88 + 0.06 * r.speed,
+    reachMul: 0.92 + 0.035 * r.speed,
+    staminaMaxMul: 0.7 + 0.12 * r.stamina,
+    staminaDrainMul: 1.2 - 0.1 * r.stamina,
+    staminaRegenMul: 0.8 + 0.1 * r.stamina,
+    touchNoiseMul: 1.3 - 0.12 * r.finesse,
+    returnTouchMul: 1.2 - 0.1 * r.finesse,
+  }
+}
+
+/** 中立倍率(全 1.0)。ペルソナ未指定(テスト・ダミー)時のフォールバック */
+export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
+  serveSpeedMul: 1, serveFaultMul: 1, shotSpeedMul: 1, chargeGainMul: 1,
+  aimNoiseMul: 1, netMarginMul: 1, returnSolidMul: 1, moveSpeedMul: 1,
+  reachMul: 1, staminaMaxMul: 1, staminaDrainMul: 1, staminaRegenMul: 1,
+  touchNoiseMul: 1, returnTouchMul: 1,
+}

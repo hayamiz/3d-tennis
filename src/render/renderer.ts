@@ -2,13 +2,21 @@
 // GameRenderer — Three.js レンダリング全体の入口
 // ARCHITECTURE §12 に従い、constructor(canvas)・resize()・render(dt, world) を提供。
 // SceneApi(spawnBounceFx / spawnHitFx)も実装して main に公開する。
+// setMatchup(player, opponent) でペルソナ変更時にキャラクターを再構成する。
 // =============================================================================
 import * as THREE from 'three'
-import type { SceneApi, WorldView } from '../types'
+import type { SceneApi, WorldView, PersonaPhysique, PersonaAppearance } from '../types'
+import { PLAYER_PERSONAS } from '../constants'
 import { buildCourt, buildSkyDome } from './court'
 import { BallEntity, CharacterEntity } from './entities'
 import { CameraController } from './camera'
 import { EffectSystem } from './effects'
+
+/** setMatchup に渡すペルソナの見た目情報 */
+export interface PersonaVisual {
+  physique: PersonaPhysique
+  appearance: PersonaAppearance
+}
 
 export class GameRenderer {
   // WebGL レンダラ
@@ -18,10 +26,10 @@ export class GameRenderer {
   // カメラコントローラ
   private readonly cameraCtrl: CameraController
 
-  // エンティティ
+  // エンティティ(setMatchup で差し替え可能なため readonly をはずす)
   private readonly ballEntity: BallEntity
-  private readonly playerEntity: CharacterEntity
-  private readonly opponentEntity: CharacterEntity
+  private playerEntity: CharacterEntity
+  private opponentEntity: CharacterEntity
 
   // エフェクトシステム(SceneApi を実装)
   private readonly effects: EffectSystem
@@ -79,11 +87,23 @@ export class GameRenderer {
     this.cameraCtrl = new CameraController(canvas)
 
     // -------------------------------------------------------------------------
-    // エンティティ
+    // エンティティ: 初期ペルソナは sambrant(player) / sambrant(opponent) を使用。
+    // setMatchup が呼ばれると適切なペルソナで再構成される。
     // -------------------------------------------------------------------------
-    this.ballEntity = new BallEntity(this.scene)
-    this.playerEntity = new CharacterEntity(this.scene, true)
-    this.opponentEntity = new CharacterEntity(this.scene, false)
+    const defaultPlayerPersona   = PLAYER_PERSONAS['sambrant']
+    const defaultOpponentPersona = PLAYER_PERSONAS['sambrant']
+
+    this.ballEntity    = new BallEntity(this.scene)
+    this.playerEntity  = new CharacterEntity(this.scene, {
+      team:       'player',
+      physique:   defaultPlayerPersona.physique,
+      appearance: defaultPlayerPersona.appearance,
+    })
+    this.opponentEntity = new CharacterEntity(this.scene, {
+      team:       'opponent',
+      physique:   defaultOpponentPersona.physique,
+      appearance: defaultOpponentPersona.appearance,
+    })
 
     // -------------------------------------------------------------------------
     // エフェクトシステム
@@ -126,6 +146,32 @@ export class GameRenderer {
     const x = (ndc.x * 0.5 + 0.5) * canvas.clientWidth
     const y = (-ndc.y * 0.5 + 0.5) * canvas.clientHeight
     return { x, y }
+  }
+
+  /**
+   * マッチ開始時に呼ぶ。両キャラクターを指定ペルソナで再構成する。
+   * 旧メッシュはシーンから除去して破棄(dispose)し、新しいものを生成・追加する。
+   * main.ts がマッチ設定を受け取った直後(startMatch など)に呼ぶ。
+   *
+   * @param player   プレイヤー側の外見情報(physique + appearance)
+   * @param opponent 相手 AI 側の外見情報(physique + appearance)
+   */
+  setMatchup(player: PersonaVisual, opponent: PersonaVisual): void {
+    // 旧エンティティをシーンから除去
+    this.playerEntity.dispose(this.scene)
+    this.opponentEntity.dispose(this.scene)
+
+    // 新しい外見パラメータでキャラクターを再構成
+    this.playerEntity = new CharacterEntity(this.scene, {
+      team:       'player',
+      physique:   player.physique,
+      appearance: player.appearance,
+    })
+    this.opponentEntity = new CharacterEntity(this.scene, {
+      team:       'opponent',
+      physique:   opponent.physique,
+      appearance: opponent.appearance,
+    })
   }
 
   /**

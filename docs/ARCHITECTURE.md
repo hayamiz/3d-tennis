@@ -271,6 +271,41 @@ mishit ≤ EPS のときは §6.1 の通常経路(flat→solveDrive、他→solv
 (従来の仰角掃引に加え、着地の水平誤差をフィードバックする)。
 さもないとスライス/キックが常にボックスを外す。
 
+### 6.5 ペルソナ倍率の適用(GAME_DESIGN §12 / IMPROVEMENTS §3.4)
+
+ペルソナ能力値(1..5)は `constants.ts` の `personaModifiers(ratings)` で
+`PersonaModifiers`(倍率の束)に変換され、**既存定数に掛けるだけ**で個性を表現する。
+依存ルールを保つため、倍率は各モジュールへ「注入」される:
+- `solveShot` は `req.mods`(無ければ `NEUTRAL_PERSONA_MODIFIERS`)を読む。
+- `solveServe` は引数 `mods?` を読む。
+- `PlayerController` / `AIController` はコンストラクタで `mods` と `physique` を受け取る。
+- `main.ts` が選択ペルソナから倍率を算出して結線する。
+
+**ソルバ(shot.ts)での適用点**(`m = req.mods ?? NEUTRAL`):
+```
+ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ speed にも適用)
+チャージ威力        : chargePower = CHARGE_POWER_MIN + CHARGE_POWER_GAIN*m.chargeGainMul*min(c,1)
+狙いノイズ(一般)   : flat/topspin の noiseR *= m.aimNoiseMul
+狙いノイズ(タッチ) : slice/drop/lob の noiseR *= m.touchNoiseMul
+ネット越えマージン  : netMargin *= m.netMarginMul
+差し込まれ(§6.2)  : mishit *= m.returnSolidMul、pace 由来の aimNoiseAdd *= m.returnTouchMul
+```
+**サーブ(solveServe)**: `speed *= m.serveSpeedMul`、スイートゾーン外の `aimNoise *= m.serveFaultMul`。
+
+**コントローラ(player.ts / ai.ts)での適用点**:
+```
+最高速        : (WALK/SPRINT)_SPEED *= m.moveSpeedMul
+リーチ        : effReach = REACH * m.reachMul(打球可否ゲートと距離品質係数の両方で使う)
+スタミナ上限  : effStaminaMax = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
+スタミナ消耗  : STAMINA_SPRINT_DRAIN *= m.staminaDrainMul
+スタミナ回復  : STAMINA_REGEN *= m.staminaRegenMul
+利き手        : physique.handedness==='left' なら swingSide(fore/back)判定を左右反転
+```
+各 ShotRequest には自分の `mods` を添付してソルバへ渡す。
+
+較正方針: r=3 でほぼ現状、最強でも 1.1〜1.3 倍程度。難易度(AIProfile)との二重
+スケールで過剰にならないよう、ペルソナ同士の勝率が拮抗することを scripts/ で確認する。
+
 ## 7. マッチフロー状態機械(`src/main.ts` が駆動)
 
 ```
@@ -412,6 +447,14 @@ class GameRenderer {
     `view.swingSide` で フォア/バック の腕の振りを描き分け、
     `view.charging` 中はボール側へテイクバック(深さ ∝ `view.charge`)。
     移動方向へ傾き、`whiff` は別モーション。
+  - **ペルソナのパラメータ化**(GAME_DESIGN §12 / IMPROVEMENTS §3.6-3.7):
+    `CharacterEntity` は `{ team: Side; physique: PersonaPhysique; appearance: PersonaAppearance }`
+    を受け取り、`TEAM_PALETTE[team]`(1P青/2P赤)で配色、`physique.heightM/BASE_HEIGHT_M` で
+    縦・`build` で太さをスケール、`hair`/`sleeves`/`accent` で識別フィーチャー(髪・袖・小物)を
+    付ける。`handedness==='left'` はモデルを y 軸で鏡像化(利き腕反転)。スケールは
+    ジオメトリ寸法側に適用しスイング/走りアニメ階層を壊さない。物理 `REACH` とは独立。
+    `GameRenderer.setMatchup(player, opponent)`(各 `{physique, appearance}`)で
+    マッチ開始時に両キャラを再構成する。
 - `camera.ts`: 追従カメラ。位置 `playerPos + (0, 6.5, 9)` へ lerp(係数 3·dt)、
   注視 `mix(playerPos, ballPos, 0.35)` へ lerp。メニュー中は俯瞰へゆっくり旋回。
 - エフェクト: バウンド時ダストリング(スケール+フェード)、ヒット時フラッシュ。

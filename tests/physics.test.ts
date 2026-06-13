@@ -14,7 +14,9 @@ import {
   COURT_HALF_WIDTH,
   SHOT_PARAMS,
   SERVICE_LINE_Z,
+  NEUTRAL_PERSONA_MODIFIERS,
 } from '../src/constants'
+import type { PersonaModifiers } from '../src/types'
 
 /** ボールが地面で次にバウンドする位置と、そのときの上昇後の最高到達高さを得る補助。 */
 function runUntilBounce(sim: BallSim, maxSteps = 2000): { pos: Vector3; step: number } | null {
@@ -680,5 +682,101 @@ describe('サーブの種類(ARCHITECTURE §6.4 / §16)', () => {
       return sum / trials
     }
     expect(avgSpeed('flat')).toBeGreaterThan(avgSpeed('kick'))
+  })
+})
+
+describe('ペルソナ倍率の適用(ARCHITECTURE §6.5)', () => {
+  /** NEUTRAL を一部だけ上書きした倍率を作る補助。 */
+  function withMods(over: Partial<PersonaModifiers>): PersonaModifiers {
+    return { ...NEUTRAL_PERSONA_MODIFIERS, ...over }
+  }
+
+  it('回帰: mods 省略時は明示的 NEUTRAL と完全に同一の初速になる', () => {
+    // 乱数を含むため品質1.0・無チャージ・中庸球威でノイズ 0 の条件で比較する。
+    const hitPos = new Vector3(0, 1.0, 10)
+    const target = new Vector3(1.0, 0, -5)
+    const base = {
+      type: 'topspin' as ShotType,
+      hitter: 'player' as const,
+      hitPos,
+      target,
+      quality: 1.0,
+      charge: 0.5,
+      incomingSpeed: 12, // PACE_CONTROL_THRESH(17)未満 → pace 誤差 0・狙いノイズ 0
+    }
+    const omitted = solveShot({ ...base })
+    const neutral = solveShot({ ...base, mods: NEUTRAL_PERSONA_MODIFIERS })
+    // ノイズ 0 条件なので決定的に一致するはず。
+    expect(omitted.vel.length()).toBeCloseTo(neutral.vel.length(), 6)
+  })
+
+  it('高い shotSpeedMul(パワー型)はショット初速を上げる', () => {
+    const hitPos = new Vector3(0, 1.0, 10)
+    const target = new Vector3(1.0, 0, -9)
+    const base = {
+      type: 'flat' as ShotType,
+      hitter: 'player' as const,
+      hitPos,
+      target,
+      quality: 1.0,
+      charge: 0,
+      incomingSpeed: 12,
+    }
+    const neutral = solveShot({ ...base, mods: NEUTRAL_PERSONA_MODIFIERS })
+    const powerful = solveShot({ ...base, mods: withMods({ shotSpeedMul: 1.25 }) })
+    expect(powerful.vel.length()).toBeGreaterThan(neutral.vel.length())
+  })
+
+  it('高い serveSpeedMul(サーブ型)はサーブ初速を上げる', () => {
+    const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
+    const target = new Vector3(-1.5, 0, -4)
+    function avgSpeed(mods: PersonaModifiers): number {
+      let sum = 0
+      const trials = 20
+      for (let i = 0; i < trials; i++) {
+        sum += solveServe(hitPos, target, 0.78, 'player', 'flat', mods).vel.length()
+      }
+      return sum / trials
+    }
+    const neutral = avgSpeed(NEUTRAL_PERSONA_MODIFIERS)
+    const bigServe = avgSpeed(withMods({ serveSpeedMul: 1.12 }))
+    expect(bigServe).toBeGreaterThan(neutral)
+  })
+
+  it('高い aimNoiseMul(スピン安定が低い)は着地のばらつきを増やす(統計的)', () => {
+    function landingSpread(mods: PersonaModifiers): number {
+      const hitPos = new Vector3(0, 1.0, 10)
+      const target = new Vector3(1.0, 0, -5)
+      const xs: number[] = []
+      const zs: number[] = []
+      for (let i = 0; i < 150; i++) {
+        const sol = solveShot({
+          type: 'topspin',
+          hitter: 'player',
+          hitPos,
+          target,
+          quality: 0.6, // 品質を下げて狙いノイズを発生させ、倍率の効果を可視化
+          charge: 0,
+          incomingSpeed: 18,
+          mods,
+        })
+        const sim = new BallSim()
+        sim.launch(hitPos, sol.vel, sol.spin, 'player')
+        const land = runUntilBounce(sim)
+        if (land) {
+          xs.push(land.pos.x)
+          zs.push(land.pos.z)
+        }
+      }
+      const mean = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length
+      const variance = (a: number[]) => {
+        const mm = mean(a)
+        return a.reduce((s, v) => s + (v - mm) * (v - mm), 0) / a.length
+      }
+      return Math.sqrt(variance(xs) + variance(zs))
+    }
+    const steady = landingSpread(withMods({ aimNoiseMul: 0.7 })) // スピン安定が高い
+    const shaky = landingSpread(withMods({ aimNoiseMul: 1.3 })) // スピン安定が低い
+    expect(shaky).toBeGreaterThan(steady)
   })
 })

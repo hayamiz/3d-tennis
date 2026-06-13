@@ -5,10 +5,18 @@
 // 使うため ../physics/ball.ts を import する(本モジュールのみ許可された例外)。
 // =============================================================================
 import { Vector3 } from 'three'
-import type { ShotRequest, ShotSolution, ShotType, ServeType, Side } from '../types'
+import type {
+  ShotRequest,
+  ShotSolution,
+  ShotType,
+  ServeType,
+  Side,
+  PersonaModifiers,
+} from '../types'
 import { sideSign } from '../types'
 import { BallSim } from '../physics/ball'
 import {
+  NEUTRAL_PERSONA_MODIFIERS,
   SHOT_PARAMS,
   AIM_NOISE_R,
   QUALITY_POWER_MIN,
@@ -185,11 +193,15 @@ export function solveShot(req: ShotRequest): ShotSolution {
   const param = SHOT_PARAMS[req.type]
   const q = Math.max(0, Math.min(1, req.quality))
 
+  // ペルソナ倍率(ARCHITECTURE §6.5)。未指定は中立(全 1.0)= 従来挙動。
+  const m = req.mods ?? NEUTRAL_PERSONA_MODIFIERS
+
   // --- 手順2b: チャージ適用(GAME_DESIGN §4.4 / ARCHITECTURE §6 2b) ---
   // c は 0..CHARGE_MAX。1.0 超はオーバーチャージ。
   const c = Math.max(0, Math.min(CHARGE_MAX, req.charge))
   // 威力係数は min(c,1) で頭打ち(オーバーチャージで初速は増えない)。
-  const chargePower = CHARGE_POWER_MIN + CHARGE_POWER_GAIN * Math.min(c, 1)
+  // チャージ獲得量にペルソナのパワー倍率(chargeGainMul)を乗算。
+  const chargePower = CHARGE_POWER_MIN + CHARGE_POWER_GAIN * m.chargeGainMul * Math.min(c, 1)
   const over = Math.max(0, c - 1) // オーバーチャージ量(0..CHARGE_MAX-1)
   // オーバーチャージの狙い誤差加算 (c-1)·OVERCHARGE_NOISE
   const chargeNoiseR = over * OVERCHARGE_NOISE
@@ -226,14 +238,17 @@ export function solveShot(req: ShotRequest): ShotSolution {
 
   // --- (A) スマッシュ分岐(高い打点 × 前寄り × フラット)---
   if (req.type === 'flat' && h >= SMASH_MIN_HEIGHT && depth <= SMASH_MAX_DEPTH) {
-    // 初速: 品質ペナルティを緩和、チャージで増速
+    // 初速: 品質ペナルティを緩和、チャージで増速。ペルソナのパワー倍率を乗算。
     const smashSpeed =
       SMASH_SPEED *
       (SMASH_QUALITY_FLOOR + (1 - SMASH_QUALITY_FLOOR) * q) *
-      (1 + SMASH_CHARGE_GAIN * Math.min(c, 1))
-    // 狙いは正確(基本ノイズ × MUL + チャージノイズ)。高さノイズは drive 側の
+      (1 + SMASH_CHARGE_GAIN * Math.min(c, 1)) *
+      m.shotSpeedMul
+    // 狙いは正確(基本ノイズ × MUL × ペルソナ aimNoiseMul + チャージノイズ)。
+    // スマッシュは flat 由来のため aimNoiseMul を適用。高さノイズは drive 側の
     // 仰角探索に委ねる(平坦・下降軌道で叩き込むため apex 指定は不要)。
-    const smashNoiseR = (1 - q) * AIM_NOISE_R * SMASH_AIM_NOISE_MUL + chargeNoiseR
+    const smashNoiseR =
+      (1 - q) * AIM_NOISE_R * SMASH_AIM_NOISE_MUL * m.aimNoiseMul + chargeNoiseR
     if (smashNoiseR > 0) {
       const ang = Math.random() * Math.PI * 2
       const r = Math.sqrt(Math.random()) * smashNoiseR
@@ -274,13 +289,13 @@ export function solveShot(req: ShotRequest): ShotSolution {
     LOW_POWER_OVERSHOOT * low * powerExcess * foreLowAmp +
     FORECOURT_FLAT_OVERSHOOT * fore * (1 - high) * flatSliceWeight
 
-  // aimNoiseAdd(m): ランダム誤差半径に加算
-  let aimNoiseAdd =
-    LOW_CONTACT_SPRAY * low * powerExcess * foreLowAmp +
-    PACE_CONTROL_K * Math.max(0, vIn - PACE_CONTROL_THRESH) * (1.2 - q)
+  // aimNoiseAdd: ランダム誤差半径に加算。
+  // pace 由来(相手球の勢いによる制御難)の誤差にはペルソナの returnTouchMul を乗算。
+  let paceAimNoise = PACE_CONTROL_K * Math.max(0, vIn - PACE_CONTROL_THRESH) * (1.2 - q)
   if (req.type === 'drop' || req.type === 'lob') {
-    aimNoiseAdd += PACE_TOUCH_PENALTY * Math.max(0, vIn - PACE_CONTROL_THRESH)
+    paceAimNoise += PACE_TOUCH_PENALTY * Math.max(0, vIn - PACE_CONTROL_THRESH)
   }
+  const aimNoiseAdd = LOW_CONTACT_SPRAY * low * powerExcess * foreLowAmp + paceAimNoise * m.returnTouchMul
 
   // netMarginMul: 低打点フラットはネット掛かりやすく、topspin/slice は持ち上げる
   let netMarginMul = 1
@@ -291,9 +306,12 @@ export function solveShot(req: ShotRequest): ShotSolution {
   }
 
   // --- 合成 ---
-  const speed = param.speed * powerScale * chargePower * speedMul + speedAdd
+  // 初速にペルソナのショット速度倍率(shotSpeedMul)を乗算。pace リダイレクト分は
+  // 倍率の外で加算する(相手球の勢い由来であり打者のパワーには依らない)。
+  const speed = param.speed * powerScale * chargePower * speedMul * m.shotSpeedMul + speedAdd
   let spinScalar = param.spinScalar * spinMul
-  let netMargin = param.netMargin * netMarginScale * netMarginMul
+  // ネット越えマージンにペルソナの netMarginMul を乗算(スピン安定が高いほど安全)。
+  let netMargin = param.netMargin * netMarginScale * netMarginMul * m.netMarginMul
 
   // 目標を「打点→目標の水平方向」へ depthBias だけ深くずらす(アウト方向)。
   // mishit の手前引きより先に適用し、clean な目標を確定させておく。
@@ -322,9 +340,10 @@ export function solveShot(req: ShotRequest): ShotSolution {
           : RETURN_WEAKNESS_TOUCH // lob / drop
   const chargeMit = 1 - RETURN_CHARGE_MITIGATION * Math.min(c, 1)
   const posMit = Math.max(0.35, Math.min(1.0, 1.3 - q))
+  // 差し込まれ度合いにペルソナの returnSolidMul を乗算(リターン巧者ほど差し込まれにくい)。
   const mishit = Math.max(
     0,
-    Math.min(1, (paceExcess / RETURN_OVERWHELM_RANGE) * typeWeak * chargeMit * posMit),
+    Math.min(1, (paceExcess / RETURN_OVERWHELM_RANGE) * typeWeak * chargeMit * posMit * m.returnSolidMul),
   )
 
   // 弱返球パラメータ(clean な打球と山なり sitter を mishit で線形補間)。
@@ -352,8 +371,14 @@ export function solveShot(req: ShotRequest): ShotSolution {
     }
   }
 
-  // 狙いノイズ半径 = 従来(品質+チャージ) + 文脈分(+ mishit のスプレー)
-  const noiseR = baseNoiseR + aimNoiseMishit
+  // 狙いノイズ半径 = 従来(品質+チャージ) + 文脈分(+ mishit のスプレー)。
+  // ペルソナの「狙いノイズ」倍率を種別で使い分ける(ARCHITECTURE §6.5):
+  // flat/topspin は aimNoiseMul(スピン安定)、slice/drop/lob は touchNoiseMul(技巧)。
+  // pace 由来の誤差は既に returnTouchMul を反映済みなので二重に掛けない。
+  const typeNoiseMul =
+    req.type === 'flat' || req.type === 'topspin' ? m.aimNoiseMul : m.touchNoiseMul
+  const noiseR = (baseNoiseR + aimNoiseMishit - paceAimNoise * m.returnTouchMul) * typeNoiseMul +
+    paceAimNoise * m.returnTouchMul
   if (noiseR > 0) {
     const ang = Math.random() * Math.PI * 2
     const r = Math.sqrt(Math.random()) * noiseR
@@ -677,9 +702,12 @@ export function solveServe(
   power: number,
   hitter: Side,
   serveType: ServeType,
+  mods?: PersonaModifiers,
 ): ShotSolution {
   const p = Math.max(0, Math.min(1, power))
   const stp = SERVE_TYPE_PARAMS[serveType]
+  // ペルソナ倍率(ARCHITECTURE §6.5)。未指定は中立(全 1.0)= 従来挙動。
+  const m = mods ?? NEUTRAL_PERSONA_MODIFIERS
 
   // power→速度。p に対し単調増加。p<SWEET_MIN は安全(遅い)側、
   // SWEET 以上は SERVE_SPEED_MIN..MAX をフルに使う。種別倍率を最後に乗算。
@@ -696,6 +724,8 @@ export function solveServe(
         ((p - SERVE_SWEET_MIN) / (1 - SERVE_SWEET_MIN))
   }
   speed *= stp.speedMul
+  // ペルソナのサーブ速度倍率を乗算(サーブ能力が高いほど速い)。
+  speed *= m.serveSpeedMul
 
   // 狙い誤差: スイートゾーン外で増大(GAME_DESIGN §5)。種別の faultNoiseMul で増減。
   let aimNoise = 0
@@ -704,7 +734,8 @@ export function solveServe(
   } else if (p < SERVE_SWEET_MIN) {
     aimNoise = (SERVE_SWEET_MIN - p) * 1.2 // 弱め: 誤差はやや増える(安全側)
   }
-  aimNoise *= stp.faultNoiseMul
+  // 種別の faultNoiseMul とペルソナの serveFaultMul を乗算(サーブ能力が高いほどフォルト減)。
+  aimNoise *= stp.faultNoiseMul * m.serveFaultMul
 
   const aimedTarget = target.clone()
   aimedTarget.y = 0
