@@ -320,6 +320,48 @@ canvas#game-canvas {
   white-space: nowrap;
 }
 
+/* --- サーブ種類表示(サーブ番号ラベルの下) --- */
+.hud-serve-type-label {
+  /* プレイヤーの頭上に表示する(left/top は main の投影座標を毎フレーム設定)。
+     アンカー点(頭上)に対して水平中央・少し上に配置する。 */
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -120%);
+  font-size: clamp(0.75rem, 1.2vw, 0.9rem);
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0.18rem 0.8rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  /* デフォルト色(フラット) */
+  color: #e8e8e8;
+}
+
+.hud-serve-type-label.hidden {
+  display: none;
+}
+
+/* フラット: 白系(速い・直線的) */
+.hud-serve-type-label.serve-type-flat {
+  color: #f0f0a0;
+  border: 1px solid rgba(240, 240, 100, 0.4);
+}
+
+/* スライス: 青系(横に曲がる) */
+.hud-serve-type-label.serve-type-slice {
+  color: #80d0ff;
+  border: 1px solid rgba(100, 180, 255, 0.4);
+}
+
+/* キック: 緑系(安全・高いバウンド) */
+.hud-serve-type-label.serve-type-kick {
+  color: #80e880;
+  border: 1px solid rgba(100, 220, 100, 0.4);
+}
+
 /* --- スタミナバー --- */
 .hud-stamina {
   position: absolute;

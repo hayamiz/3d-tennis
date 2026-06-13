@@ -5,7 +5,7 @@
 // 使うため ../physics/ball.ts を import する(本モジュールのみ許可された例外)。
 // =============================================================================
 import { Vector3 } from 'three'
-import type { ShotRequest, ShotSolution, ShotType, Side } from '../types'
+import type { ShotRequest, ShotSolution, ShotType, ServeType, Side } from '../types'
 import { sideSign } from '../types'
 import { BallSim } from '../physics/ball'
 import {
@@ -46,6 +46,19 @@ import {
   PACE_CONTROL_THRESH,
   PACE_CONTROL_K,
   PACE_TOUCH_PENALTY,
+  RETURN_PACE_THRESH,
+  RETURN_OVERWHELM_RANGE,
+  RETURN_WEAKNESS_SLICE,
+  RETURN_WEAKNESS_FLAT,
+  RETURN_WEAKNESS_TOPSPIN,
+  RETURN_WEAKNESS_TOUCH,
+  RETURN_CHARGE_MITIGATION,
+  WEAK_RETURN_SPEED,
+  RETURN_FLOAT_APEX,
+  RETURN_MISHIT_SHORT,
+  RETURN_MISHIT_SPRAY,
+  MISHIT_ACTIVE_EPS,
+  SERVE_TYPE_PARAMS,
 } from '../constants'
 
 // 補正反復・検証回数の上限(§6 手順4・5)
@@ -279,10 +292,11 @@ export function solveShot(req: ShotRequest): ShotSolution {
 
   // --- 合成 ---
   const speed = param.speed * powerScale * chargePower * speedMul + speedAdd
-  const spinScalar = param.spinScalar * spinMul
-  const netMargin = param.netMargin * netMarginScale * netMarginMul
+  let spinScalar = param.spinScalar * spinMul
+  let netMargin = param.netMargin * netMarginScale * netMarginMul
 
   // 目標を「打点→目標の水平方向」へ depthBias だけ深くずらす(アウト方向)。
+  // mishit の手前引きより先に適用し、clean な目標を確定させておく。
   if (depthBias !== 0) {
     const dirX = target.x - req.hitPos.x
     const dirZ = target.z - req.hitPos.z
@@ -293,14 +307,75 @@ export function solveShot(req: ShotRequest): ShotSolution {
     }
   }
 
-  // 狙いノイズ半径 = 従来(品質+チャージ) + 文脈分
-  const noiseR = baseNoiseR + aimNoiseAdd
+  // --- 手順2.6: 速球の返球(差し込まれ / mishit) — ARCHITECTURE §6.2 / GAME_DESIGN §4.6 ---
+  // スマッシュ分岐(上で return 済み)以外の全ショットで、相手球が速いと芯で
+  // 捉えにくく「差し込まれて」山なりの弱い返球(チャンスボール)になる。
+  // 通常ラリー(vIn ≤ RETURN_PACE_THRESH=26)は paceExcess=0 → mishit=0 で影響なし。
+  const paceExcess = Math.max(0, vIn - RETURN_PACE_THRESH)
+  const typeWeak =
+    req.type === 'slice'
+      ? RETURN_WEAKNESS_SLICE
+      : req.type === 'flat'
+        ? RETURN_WEAKNESS_FLAT
+        : req.type === 'topspin'
+          ? RETURN_WEAKNESS_TOPSPIN
+          : RETURN_WEAKNESS_TOUCH // lob / drop
+  const chargeMit = 1 - RETURN_CHARGE_MITIGATION * Math.min(c, 1)
+  const posMit = Math.max(0.35, Math.min(1.0, 1.3 - q))
+  const mishit = Math.max(
+    0,
+    Math.min(1, (paceExcess / RETURN_OVERWHELM_RANGE) * typeWeak * chargeMit * posMit),
+  )
+
+  // 弱返球パラメータ(clean な打球と山なり sitter を mishit で線形補間)。
+  // cleanSpeed は §6.1 までで算出した本来の初速(= speed)。
+  let floatSpeed = speed
+  let floatApex = param.apex
+  let aimNoiseMishit = aimNoiseAdd
+  if (mishit > MISHIT_ACTIVE_EPS) {
+    // 遅く・高く(山なり)・回転を失う
+    floatSpeed = speed + (WEAK_RETURN_SPEED - speed) * mishit
+    floatApex = param.apex + (RETURN_FLOAT_APEX - param.apex) * mishit
+    spinScalar *= 1 - 0.7 * mishit
+    aimNoiseMishit += RETURN_MISHIT_SPRAY * mishit
+    // netMargin は安全側(山なりで apex が高いので自然にネットを越えやすい)。
+
+    // 目標を「打点→目標の水平方向」に RETURN_MISHIT_SHORT·mishit だけ手前へ引く
+    // (浅い sitter)。打点側へ戻す = ネット側へ寄せる。
+    const dirX = target.x - req.hitPos.x
+    const dirZ = target.z - req.hitPos.z
+    const horiz = Math.hypot(dirX, dirZ)
+    if (horiz > 1e-6) {
+      const pull = RETURN_MISHIT_SHORT * mishit
+      target.x -= (dirX / horiz) * pull
+      target.z -= (dirZ / horiz) * pull
+    }
+  }
+
+  // 狙いノイズ半径 = 従来(品質+チャージ) + 文脈分(+ mishit のスプレー)
+  const noiseR = baseNoiseR + aimNoiseMishit
   if (noiseR > 0) {
     const ang = Math.random() * Math.PI * 2
     const r = Math.sqrt(Math.random()) * noiseR
     target.x += Math.cos(ang) * r
     target.z += Math.sin(ang) * r
   }
+
+  // 差し込まれ時(mishit > EPS)は、flat も含めて山なりの収束経路で返す
+  // (ドライブではなく floatSpeed/floatApex の弱い sitter)。
+  if (mishit > MISHIT_ACTIVE_EPS) {
+    return solveToTarget(
+      req.hitPos,
+      target,
+      floatSpeed,
+      floatApex,
+      spinScalar,
+      netMargin,
+      req.hitter,
+      req.type,
+    )
+  }
+
   // フラットは速度優先(ドライブ)ソルバで打つ。speed(高打点ゲイン・球威
   // リダイレクト・チャージ込み)が初速にそのまま乗り、速すぎる球は深さが
   // オーバーしてアウト、低い打点からの強打はネット/アウトに転ぶ(§4.5)。
@@ -584,27 +659,30 @@ function estimateFlightTime(hitPos: Vector3, vel: Vector3): number {
   return 1
 }
 
-// サーブのスピン量(わずかな順回転で安定させる)
-const SERVE_SPIN = 30
-
 /**
  * solveServe: サーブ専用ソルバ。
  * 打点 y = SERVE_HIT_HEIGHT、power∈[0,1] を速度へ写像する。
  * ラリーのソルバ(着地点へ完全収束)と異なり、サーブは「power が決めた速度を
- * 保ったまま、射出仰角だけを探索して指定ボックスに入れる」モデルにする。
+ * 保ったまま、射出仰角を探索して指定ボックスに入れる」モデルにする。
  * これにより power が大きいほど確実に初速が速くなる(GAME_DESIGN §5)。
  * スイートゾーン外の誤差則も §5 に従う。
+ *
+ * serveType(GAME_DESIGN §5.1 / ARCHITECTURE §6.4)で速度・スピン・マージン・
+ * フォルト誤差を変える。スライス/キックはサイドスピンで横に曲がるため、
+ * 仰角だけでなく水平方向の狙いもシミュレーション補正してボックスに収める。
  */
 export function solveServe(
   hitPos: Vector3,
   target: Vector3,
   power: number,
   hitter: Side,
+  serveType: ServeType,
 ): ShotSolution {
   const p = Math.max(0, Math.min(1, power))
+  const stp = SERVE_TYPE_PARAMS[serveType]
 
   // power→速度。p に対し単調増加。p<SWEET_MIN は安全(遅い)側、
-  // SWEET 以上は SERVE_SPEED_MIN..MAX をフルに使う。
+  // SWEET 以上は SERVE_SPEED_MIN..MAX をフルに使う。種別倍率を最後に乗算。
   let speed: number
   if (p < SERVE_SWEET_MIN) {
     // 0..SWEET_MIN を SERVE_SPEED_MIN*0.7 .. SERVE_SPEED_MIN に比例
@@ -617,14 +695,16 @@ export function solveServe(
       (SERVE_SPEED_MAX - SERVE_SPEED_MIN) *
         ((p - SERVE_SWEET_MIN) / (1 - SERVE_SWEET_MIN))
   }
+  speed *= stp.speedMul
 
-  // 狙い誤差: スイートゾーン外で増大(GAME_DESIGN §5)。
+  // 狙い誤差: スイートゾーン外で増大(GAME_DESIGN §5)。種別の faultNoiseMul で増減。
   let aimNoise = 0
   if (p > SERVE_SWEET_MAX) {
     aimNoise = (p - SERVE_SWEET_MAX) * 6.0 // オーバーパワー: 速いが誤差大
   } else if (p < SERVE_SWEET_MIN) {
     aimNoise = (SERVE_SWEET_MIN - p) * 1.2 // 弱め: 誤差はやや増える(安全側)
   }
+  aimNoise *= stp.faultNoiseMul
 
   const aimedTarget = target.clone()
   aimedTarget.y = 0
@@ -638,48 +718,85 @@ export function solveServe(
   const hp = hitPos.clone()
   hp.y = SERVE_HIT_HEIGHT
 
-  // 水平方向は打点→目標で固定し、射出仰角 θ を −18°..+18° で探索して
-  // 着地が目標に最も近づく θ を選ぶ(速度の大きさは speed のまま保持)。
-  const dx = aimedTarget.x - hp.x
-  const dz = aimedTarget.z - hp.z
-  const horiz = Math.hypot(dx, dz)
+  // スピン: 順回転 spinVector(horizDir, topSpin) + サイドスピン sideSpin·ŷ(縦軸回り)。
+  // サイドスピンは横へ曲げる Magnus を生むため、着地の水平誤差を dir の回転で
+  // フィードバック補正する(数回反復)。slice/kick が常にボックスを外すのを防ぐ。
+  const sideSpinVec = new Vector3(0, stp.sideSpin, 0)
+
+  // 初期の水平進行方向(打点→狙い)。曲がり補正でこの方向を回転させる。
+  const dx0 = aimedTarget.x - hp.x
+  const dz0 = aimedTarget.z - hp.z
+  const horiz0 = Math.hypot(dx0, dz0)
   let dirX = 0
   let dirZ = -sideSign(hitter)
-  if (horiz > 1e-6) {
-    dirX = dx / horiz
-    dirZ = dz / horiz
+  if (horiz0 > 1e-6) {
+    dirX = dx0 / horiz0
+    dirZ = dz0 / horiz0
   }
 
-  let bestVel: Vector3 | null = null
-  let bestErr = Infinity
-  let bestSpin = new Vector3()
-  for (let deg = -18; deg <= 18; deg += 0.5) {
-    const th = (deg * Math.PI) / 180
-    const vy = speed * Math.sin(th)
-    const vh = speed * Math.cos(th)
-    const vel = new Vector3(dirX * vh, vy, dirZ * vh)
-    const horizDir = new Vector3(dirX, 0, dirZ)
-    const spin = spinVector(horizDir, SERVE_SPIN)
-    const land = simulateLanding(hp, vel, spin, hitter)
-    if (!land) continue // ネットに掛かる仰角は除外
-    const err = Math.hypot(land.x - aimedTarget.x, land.z - aimedTarget.z)
-    if (err < bestErr) {
-      bestErr = err
-      bestVel = vel
-      bestSpin = spin
+  // 要求ネット越え高(キックは高く)。
+  const needCross = NET_HEIGHT + 0.15 * stp.netMarginMul
+
+  /** 与えた水平方向 dir で仰角を掃引し、最も狙いに近い解とその着地を返す。 */
+  function sweepElevation(
+    dX: number,
+    dZ: number,
+  ): { vel: Vector3; spin: Vector3; land: Vector3 } | null {
+    const horizDir = new Vector3(dX, 0, dZ)
+    const spin = spinVector(horizDir, stp.topSpin).add(sideSpinVec)
+    let best: { vel: Vector3; spin: Vector3; land: Vector3 } | null = null
+    let bestErr = Infinity
+    // キックは高い弾道が必要なため上限を引き上げる。
+    const maxDeg = 18 + 18 * Math.max(0, stp.netMarginMul - 1)
+    for (let deg = -18; deg <= maxDeg; deg += 0.5) {
+      const th = (deg * Math.PI) / 180
+      const vy = speed * Math.sin(th)
+      const vh = speed * Math.cos(th)
+      const vel = new Vector3(dX * vh, vy, dZ * vh)
+      const cross = netCrossHeight(hp, vel, spin, hitter)
+      if (cross === null || cross < needCross) continue // ネットを安全に越える仰角のみ
+      const land = simulateLanding(hp, vel, spin, hitter)
+      if (!land) continue
+      const err = Math.hypot(land.x - aimedTarget.x, land.z - aimedTarget.z)
+      if (err < bestErr) {
+        bestErr = err
+        best = { vel, spin: spin.clone(), land: land.clone() }
+      }
     }
+    return best
   }
 
-  if (bestVel) return { vel: bestVel, spin: bestSpin }
+  // --- 横曲がり補正: 着地の水平(x)誤差を打ち出し方向の回転にフィードバック ---
+  let result = sweepElevation(dirX, dirZ)
+  for (let iter = 0; iter < 4; iter++) {
+    if (!result) break
+    const errX = aimedTarget.x - result.land.x
+    if (Math.abs(errX) < 0.15) break
+    // 着地が狙いより x+ に流れた(errX<0)なら打ち出しを x- へ回す、の逆。
+    // 水平方向ベクトルを errX に比例して回転(ゲイン控えめで発散を防ぐ)。
+    const horizDist = Math.max(1, Math.hypot(aimedTarget.x - hp.x, aimedTarget.z - hp.z))
+    const dAngle = (errX / horizDist) * 0.7
+    const cos = Math.cos(dAngle)
+    const sin = Math.sin(dAngle)
+    const nX = dirX * cos - dirZ * sin
+    const nZ = dirX * sin + dirZ * cos
+    dirX = nX
+    dirZ = nZ
+    const next = sweepElevation(dirX, dirZ)
+    if (!next) break
+    result = next
+  }
+
+  if (result) return { vel: result.vel, spin: result.spin }
 
   // どの仰角でもネットを越えられない/着地しない場合のフォールバック:
   // やや上向きに打ち上げて最低限ネットを越える解を返す。
-  const th = (6 * Math.PI) / 180
+  const th = (8 * Math.PI) / 180
   const vy = speed * Math.sin(th)
   const vh = speed * Math.cos(th)
   const horizDir = new Vector3(dirX, 0, dirZ)
   return {
     vel: new Vector3(dirX * vh, vy, dirZ * vh),
-    spin: spinVector(horizDir, SERVE_SPIN),
+    spin: spinVector(horizDir, stp.topSpin).add(sideSpinVec),
   }
 }

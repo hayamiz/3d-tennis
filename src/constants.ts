@@ -2,7 +2,7 @@
 // 定数(凍結) — コート寸法・物理定数・ゲームパラメータ
 // 詳細仕様は docs/ARCHITECTURE.md / docs/GAME_DESIGN.md を参照。
 // =============================================================================
-import type { AIProfile, Difficulty, ShotType } from './types'
+import type { AIProfile, Difficulty, ServeType, ShotType } from './types'
 
 // ---------------------------------------------------------------------------
 // コート寸法(m)。ネットが z=0、プレイヤー側が z>0。
@@ -138,6 +138,60 @@ export const PACE_CONTROL_K = 0.06 // 追加誤差 = K·max(0,vIn-THRESH)·(1.2-
 export const PACE_TOUCH_PENALTY = 0.1 // drop/lob を速球から打つ追加誤差 = ·max(0,vIn-THRESH)
 
 // ---------------------------------------------------------------------------
+// 速いボールの返球難度(ミート/差し込まれ) — docs/GAME_DESIGN.md §4.6
+// スマッシュ等の速球は芯を捉えにくく、準備(チャージ)が浅いと「差し込まれて」
+// 山なりの弱い返球(チャンスボール)になる。現実のテニスのセオリー:
+//   スライス(ブロック)= 速球に最も強い(短いテイクバック・球威を利用)
+//   フラット = 中間  /  トップスピン = 速球に最も弱い(フルスイングと精密な
+//   タイミングが必要)。準備(チャージ)が十分なら強い返球も可能。
+// ---------------------------------------------------------------------------
+// この球速(m/s)を超える相手球で「差し込まれ(mishit)」が発生し始める。
+// 通常ラリーの球速(〜25程度)より上、スマッシュ(40〜60)で強く効く帯に設定。
+export const RETURN_PACE_THRESH = 26
+// mishit が 1.0 に飽和するまでの超過球速幅(m/s)
+export const RETURN_OVERWHELM_RANGE = 22
+// ショット種ごとの「速球への弱さ」係数(大きいほど差し込まれやすい)
+export const RETURN_WEAKNESS_SLICE = 0.35 // スライス/ブロックは速球に強い
+export const RETURN_WEAKNESS_FLAT = 0.6
+export const RETURN_WEAKNESS_TOPSPIN = 1.0 // トップスピンは速球に弱い
+export const RETURN_WEAKNESS_TOUCH = 1.3 // drop/lob は速球から最も難しい
+// チャージ(準備)による mishit 軽減: ×(1 − RETURN_CHARGE_MITIGATION·min(charge,1))
+export const RETURN_CHARGE_MITIGATION = 0.7
+// mishit 時の弱い返球パラメータ(山なりのチャンスボール)
+export const WEAK_RETURN_SPEED = 13 // mishit=1 での返球初速(遅い)
+export const RETURN_FLOAT_APEX = 4.5 // mishit=1 での弾道頂点(高く=山なり)
+export const RETURN_MISHIT_SHORT = 5.0 // mishit=1 で目標を手前へ引く量(m)= 浅いsitter
+export const RETURN_MISHIT_SPRAY = 2.0 // mishit=1 での追加狙い誤差(m)
+export const MISHIT_ACTIVE_EPS = 0.05 // これ未満の mishit は通常打球(差し込まれなし)
+
+// ---------------------------------------------------------------------------
+// サーブの種類(docs/GAME_DESIGN.md §5.1)
+// flat=速い/低い弾道・低いバウンド(リスク高)、slice=サイドスピンで曲がり低く滑る
+// (ワイドに追い出す)、kick=順回転で高いネットマージン(安全)・高く弾んで跳ねる。
+// ---------------------------------------------------------------------------
+export interface ServeTypeParam {
+  /** サーブ初速の倍率(power→速度に乗算) */
+  speedMul: number
+  /** 順回転スピン量 rad/s(正=トップスピン→沈んで高く弾む、負=スライス回転で低く滑る) */
+  topSpin: number
+  /** サイドスピン量 rad/s(縦軸回り)。横に曲がる(0=曲がらない) */
+  sideSpin: number
+  /** ネット越えマージン倍率(大きいほど安全に高く越える) */
+  netMarginMul: number
+  /** スイートゾーン外の誤差(フォルト率)倍率。小さいほど安全 */
+  faultNoiseMul: number
+}
+
+export const SERVE_TYPE_PARAMS: Record<ServeType, ServeTypeParam> = {
+  // フラット: 最速・低い弾道・低く直進するバウンド。マージン小でリスク高。
+  flat: { speedMul: 1.0, topSpin: 20, sideSpin: 0, netMarginMul: 1.0, faultNoiseMul: 1.0 },
+  // スライス: やや遅い・横に曲がる・わずかな逆回転で低く滑る。ワイドに追い出す。
+  slice: { speedMul: 0.9, topSpin: -40, sideSpin: 240, netMarginMul: 1.3, faultNoiseMul: 0.8 },
+  // キック: 遅いが順回転が重く高いマージンで安全。高く弾んで跳ね上がる(2ndの主軸)。
+  kick: { speedMul: 0.8, topSpin: 340, sideSpin: 120, netMarginMul: 2.2, faultNoiseMul: 0.6 },
+}
+
+// ---------------------------------------------------------------------------
 // サーブ時の立ち位置移動範囲(サーブを打つサイドの半面内)
 // ---------------------------------------------------------------------------
 /** センターマークからの最小距離(反対サイドに入れない) */
@@ -193,16 +247,27 @@ export const AI_PROFILES: Record<Difficulty, AIProfile> = {
   easy: {
     reactionDelay: 0.42, speedScale: 0.82, extraAimNoise: 1.4,
     aggressiveness: 0.25, blunderRate: 0.08, servePower1st: 0.65, servePower2nd: 0.5,
+    leaveOutClearProb: 0.82, leaveOutEdgeProb: 0.35,
   },
   normal: {
     reactionDelay: 0.28, speedScale: 0.95, extraAimNoise: 0.7,
     aggressiveness: 0.5, blunderRate: 0.04, servePower1st: 0.78, servePower2nd: 0.6,
+    leaveOutClearProb: 0.92, leaveOutEdgeProb: 0.45,
   },
   hard: {
     reactionDelay: 0.16, speedScale: 1.05, extraAimNoise: 0.3,
     aggressiveness: 0.75, blunderRate: 0.015, servePower1st: 0.84, servePower2nd: 0.68,
+    leaveOutClearProb: 0.98, leaveOutEdgeProb: 0.55,
   },
 }
+
+/**
+ * AI の「見送り」判定(GAME_DESIGN §7.1 / ARCHITECTURE §11)。
+ * 着地予測がコート外に outDist(m)出ているとき、outDist がこの値以上なら
+ * 「明らかにアウト」として leaveOutClearProb で見送る。0〜この値の間は
+ * leaveOutEdgeProb..leaveOutClearProb を線形補間した確率で見送る。
+ */
+export const AI_LEAVE_CLEAR_MARGIN = 0.6
 
 /** AI のホームポジション(ベースライン少し後ろ、z は opponent 側で符号反転して使う) */
 export const HOME_POS_Z = COURT_HALF_LENGTH + 1.0

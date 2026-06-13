@@ -221,6 +221,56 @@ FORECOURT_LOW_AMP となる「前寄りでの増幅」係数。
 高い打点のトップスピン時は横の狙いオフセットを最大
 `AIM_OFFSET_X·(1 + HIGH_TOPSPIN_ANGLE_BONUS·high)` まで拡大する。
 
+### 6.2 速球の返球(差し込まれ / mishit)— GAME_DESIGN §4.6
+
+`solveShot` は接触コンテキスト合成の後、`incomingSpeed` が速い場合の
+「差し込まれ」を計算する。スマッシュ等の強打を不用意に返すと山なりの弱い
+返球(チャンスボール)になる仕組み。スマッシュ分岐(§6.1 A)には適用しない
+(スマッシュは自分が叩く側)。
+
+```
+paceExcess = max(0, vIn − RETURN_PACE_THRESH)
+typeWeak   = { slice: RETURN_WEAKNESS_SLICE, flat: RETURN_WEAKNESS_FLAT,
+               topspin: RETURN_WEAKNESS_TOPSPIN, lob/drop: RETURN_WEAKNESS_TOUCH }[type]
+chargeMit  = 1 − RETURN_CHARGE_MITIGATION · min(c, 1)
+posMit     = clamp(1.3 − q, 0.35, 1.0)
+mishit = clamp( (paceExcess / RETURN_OVERWHELM_RANGE) · typeWeak · chargeMit · posMit, 0, 1 )
+```
+
+`mishit > MISHIT_ACTIVE_EPS` のとき、その打球は「山なりの弱い返球」へ差し替える
+(clean な打球パラメータと弱返球を mishit で線形補間):
+```
+floatSpeed = lerp(cleanSpeed, WEAK_RETURN_SPEED, mishit)
+floatApex  = lerp(param.apex,  RETURN_FLOAT_APEX,  mishit)
+目標を「打点→目標の水平方向」に RETURN_MISHIT_SHORT·mishit だけ手前へ引く(浅いsitter)
+狙いノイズ半径 += RETURN_MISHIT_SPRAY · mishit
+spinScalar *= (1 − 0.7·mishit)          // 回転を失う(floaty)
+netMargin は安全側(山なりなので越えやすい)
+→ solveToTarget(hitPos, target, floatSpeed, floatApex, spinScalar, netMargin, hitter, type)
+  (flat も mishit 時はドライブではなくこの収束経路で山なりに返る)
+```
+mishit ≤ EPS のときは §6.1 の通常経路(flat→solveDrive、他→solveToTarget)。
+
+較正: 通常ラリー(vIn ≤ 25)は paceExcess=0 で mishit=0 → 影響なし。
+スマッシュ(vIn 40〜60)を不用意な topspin で返すと mishit 大 → 弱い山なり。
+チャージ済みスライスなら mishit 小 → deep にブロック返球できる。
+
+### 6.4 サーブの種類(solveServe)— GAME_DESIGN §5.1
+
+`solveServe(hitPos, target, power, hitter, serveType)` は `SERVE_TYPE_PARAMS`
+を用いる:
+- `speed = (power→速度) · param.speedMul`
+- スピン = 順回転 `spinVector(horizDir, param.topSpin)` + サイドスピン
+  `param.sideSpin · ŷ`(縦軸回り → 横へ曲がる Magnus)。スライスは topSpin<0 で
+  低く滑り、キックは topSpin 大で高く弾む(バウンド物理 §5.2 が自然に再現)。
+- `faultNoiseMul` でスイートゾーン外の誤差(フォルト率)を増減(キック=安全)。
+- `netMarginMul` で要求ネット越え高を増減(キックは高く安全に越える)。
+
+重要: サイドスピンで横に曲がるため、**仰角だけでなく水平方向の狙いも
+シミュレーション補正**して、曲がりを見込んでサービスボックスに収める
+(従来の仰角掃引に加え、着地の水平誤差をフィードバックする)。
+さもないとスライス/キックが常にボックスを外す。
+
 ## 7. マッチフロー状態機械(`src/main.ts` が駆動)
 
 ```
@@ -320,6 +370,12 @@ interface ControlContext {
 GAME_DESIGN §7.2 の表が constants.ts にある)で挙動を決める。
 
 - **状態**: `returning`(ホームへ)/ `intercept`(予測点へ)/ `recover`。
+- **アウトの見送り**(GAME_DESIGN §7.1): 相手の新しい打球ごとに一度だけ判定。
+  `predictLanding()` の着地が自陣コート外なら、はみ出し距離 `outDist` に応じて
+  `leaveOutEdgeProb`(ライン際)〜`leaveOutClearProb`(`AI_LEAVE_CLEAR_MARGIN` 超)を
+  補間した確率で「見送り」を決定。見送る球は `tryHit` で打たず、移動目標もホームに戻す。
+  バウンド済み(`bounceCount>0`)やコート内予測の球は見送らない。判定は着地予測が
+  得られ次第(反応遅延を待たず)行い、速いアウト球を反応前に打ってしまうのを防ぐ。
 - 相手が打ってから `reactionDelay` 秒は旧目標のまま(反応遅延)。
 - 予測点 ± 到達余裕で移動。スプリントは「間に合わない時だけ」使用(スタミナ管理)。
 - ショット選択: 重みベースのスコアリング
@@ -417,6 +473,16 @@ rAF(t):
   - 高打点(h≈1.8)トップスピンは横オフセットを広げても相手コート内に収まる
     (角度がついても入る)。
   - 速球(vIn 大)をフラットで返すと低速球より初速が増える(リダイレクト)。
+- 速球の返球(§6.2):
+  - 速球(vIn≈50)を無チャージのトップスピンで返すと、通常球(vIn≈18)同条件より
+    返球初速が遅く・弾道頂点が高い(山なりの弱返球になる)。
+  - 同じ速球(vIn≈50)でも、フルチャージのスライスはトップスピンより
+    返球初速が速く弾道が低い(ブロックで deep に返せる)。
+  - 通常ラリー球速(vIn≤25)では mishit=0 で従来どおりの打球になる(回帰)。
+- サーブの種類(§6.4):
+  - 3種ともサービスボックス内に着地する(スライス/キックの横曲がりを補正できている)。
+  - kick はバウンド後の最高到達高が flat より高い(高く弾む)。
+  - flat は kick より初速が速い。
 - `tests/scoring.test.ts`: ポイント進行、デュース→アド→ゲーム、サーブ権交代、マッチ決着。
 - `tests/rally.test.ts`: イン/アウト/ネット/2バウンド/サーブフォルトの判定。
 - render / ui / audio は型チェックのみ(DOM/GL のためユニットテスト対象外)。

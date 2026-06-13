@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { Vector3 } from 'three'
 import { BallSim } from '../src/physics/ball'
 import { solveShot, solveServe } from '../src/gameplay/shot'
-import type { ShotRequest, ShotType } from '../src/types'
+import type { ServeType, ShotRequest, ShotType } from '../src/types'
 import {
   PHYS_DT,
   BALL_RADIUS,
@@ -13,6 +13,7 @@ import {
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
   SHOT_PARAMS,
+  SERVICE_LINE_Z,
 } from '../src/constants'
 
 /** ボールが地面で次にバウンドする位置と、そのときの上昇後の最高到達高さを得る補助。 */
@@ -486,7 +487,7 @@ describe('solveServe', () => {
     const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
     // 相手サービスボックス内のターゲット(z<0, ネットから 6.4m 以内)
     const target = new Vector3(-1.5, 0, -4)
-    const sol = solveServe(hitPos, target, 0.78, 'player')
+    const sol = solveServe(hitPos, target, 0.78, 'player', 'flat')
     const sim = new BallSim()
     const hp = hitPos.clone()
     hp.y = 2.6
@@ -505,8 +506,8 @@ describe('solveServe', () => {
   it('power が高いほどボール初速が速い', () => {
     const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
     const target = new Vector3(-1.5, 0, -4)
-    const slow = solveServe(hitPos, target, 0.55, 'player')
-    const fast = solveServe(hitPos, target, 0.85, 'player')
+    const slow = solveServe(hitPos, target, 0.55, 'player', 'flat')
+    const fast = solveServe(hitPos, target, 0.85, 'player', 'flat')
     expect(fast.vel.length()).toBeGreaterThan(slow.vel.length())
   })
 
@@ -516,5 +517,168 @@ describe('solveServe', () => {
     const r = runUntilBounce(sim)
     expect(r).not.toBeNull()
     if (r) expect(Math.abs(r.pos.y)).toBeLessThan(BALL_RADIUS + 1e-6)
+  })
+})
+
+describe('速球の返球(差し込まれ / ARCHITECTURE §6.2 / §16)', () => {
+  /** sol を飛ばし、最初のバウンドまでの弾道頂点(最高到達高)を返す。 */
+  function flightApex(hitPos: Vector3, sol: { vel: Vector3; spin: Vector3 }): number {
+    const sim = new BallSim()
+    sim.launch(hitPos, sol.vel, sol.spin, 'player')
+    let peak = hitPos.y
+    for (let s = 0; s < 2000; s++) {
+      const events = sim.step(PHYS_DT)
+      peak = Math.max(peak, sim.state.pos.y)
+      if (events.some((e) => e.kind === 'bounce')) break
+    }
+    return peak
+  }
+
+  /** 同条件を試行回数ぶん平均した返球初速と弾道頂点。 */
+  function avgReturn(
+    type: ShotType,
+    incomingSpeed: number,
+    charge: number,
+    trials: number,
+  ): { speed: number; apex: number } {
+    const hitPos = new Vector3(0, 0.95, 10)
+    const target = new Vector3(0, 0, -6)
+    let sumSpeed = 0
+    let sumApex = 0
+    for (let i = 0; i < trials; i++) {
+      const sol = solveShot({
+        type,
+        hitter: 'player',
+        hitPos,
+        target,
+        quality: 1.0,
+        charge,
+        incomingSpeed,
+      })
+      sumSpeed += sol.vel.length()
+      sumApex += flightApex(hitPos, sol)
+    }
+    return { speed: sumSpeed / trials, apex: sumApex / trials }
+  }
+
+  it('速球(vIn≈50)を無チャージ topspin で返すと vIn≈18 より遅く・頂点が高い', () => {
+    const slow = avgReturn('topspin', 18, 0, 40)
+    const fast = avgReturn('topspin', 50, 0, 40)
+    // 差し込まれて山なりの弱返球 → 初速が遅く、弾道頂点が高い。
+    expect(fast.speed).toBeLessThan(slow.speed)
+    expect(fast.apex).toBeGreaterThan(slow.apex)
+  })
+
+  it('速球(vIn≈50)で full charge slice は topspin より速く・弾道が低い', () => {
+    const sliceFC = avgReturn('slice', 50, 1.0, 40)
+    const topNC = avgReturn('topspin', 50, 0, 40)
+    // ブロックで deep に返せる(速い・低い)。トップスピン無チャージは差し込まれ甘い。
+    expect(sliceFC.speed).toBeGreaterThan(topNC.speed)
+    expect(sliceFC.apex).toBeLessThan(topNC.apex)
+  })
+
+  it('回帰: 通常ラリー球速(vIn≤25)では mishit=0 で従来どおり目標へ収束', () => {
+    const hitPos = new Vector3(0, 0.95, 10)
+    const target = new Vector3(1.5, 0, -5)
+    for (let i = 0; i < 20; i++) {
+      const sol = solveShot({
+        type: 'topspin',
+        hitter: 'player',
+        hitPos,
+        target,
+        quality: 1.0,
+        charge: 0,
+        incomingSpeed: 25, // しきい値(26)未満 → paceExcess=0 → mishit=0
+      })
+      const sim = new BallSim()
+      sim.launch(hitPos, sol.vel, sol.spin, 'player')
+      const land = runUntilBounce(sim)
+      expect(land).not.toBeNull()
+      if (land) {
+        const err = Math.hypot(land.pos.x - target.x, land.pos.z - target.z)
+        expect(err).toBeLessThanOrEqual(0.5)
+      }
+    }
+  })
+})
+
+describe('サーブの種類(ARCHITECTURE §6.4 / §16)', () => {
+  const serveTypes: ServeType[] = ['flat', 'slice', 'kick']
+
+  /** サーブを飛ばし、1バウンド目の着地点を得る(ネット衝突なら null)。 */
+  function serveLanding(
+    sol: { vel: Vector3; spin: Vector3 },
+    hp: Vector3,
+  ): Vector3 | null {
+    const sim = new BallSim()
+    sim.launch(hp, sol.vel, sol.spin, 'player')
+    for (let s = 0; s < 2000; s++) {
+      const events = sim.step(PHYS_DT)
+      if (events.some((e) => e.kind === 'net')) return null
+      for (const e of events) if (e.kind === 'bounce') return e.pos.clone()
+    }
+    return null
+  }
+
+  it('3種ともサービスボックス内に着地する(横曲がり補正の確認)', () => {
+    // デュースサイド(右)から相手の左サービスボックスへ。
+    const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
+    const target = new Vector3(-1.5, 0, -4)
+    for (const st of serveTypes) {
+      let inBox = 0
+      const trials = 20
+      for (let i = 0; i < trials; i++) {
+        const sol = solveServe(hitPos, target, 0.78, 'player', st)
+        const hp = hitPos.clone()
+        hp.y = 2.6
+        const land = serveLanding(sol, hp)
+        // サービスボックス: 相手コート側(z<0)・ネットからサービスライン以内・
+        // 受け側ボックス(x<0 側)。横曲がりが補正されボックスに収まること。
+        if (
+          land &&
+          land.z < 0 &&
+          land.z > -SERVICE_LINE_Z &&
+          land.x < 0.3 &&
+          land.x > -COURT_HALF_WIDTH - 0.3
+        ) {
+          inBox++
+        }
+      }
+      // スイートゾーンなので大半がボックス内に収まる。
+      expect(inBox / trials).toBeGreaterThanOrEqual(0.85)
+    }
+  })
+
+  it('kick はバウンド後の最高到達高が flat より高い(高く弾む)', () => {
+    const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
+    const target = new Vector3(-1.5, 0, -4)
+    function avgBouncePeak(st: ServeType): number {
+      let sum = 0
+      const trials = 20
+      for (let i = 0; i < trials; i++) {
+        const sol = solveServe(hitPos, target, 0.78, 'player', st)
+        const sim = new BallSim()
+        const hp = hitPos.clone()
+        hp.y = 2.6
+        sim.launch(hp, sol.vel, sol.spin, 'player')
+        sum += peakAfterBounce(sim)
+      }
+      return sum / trials
+    }
+    expect(avgBouncePeak('kick')).toBeGreaterThan(avgBouncePeak('flat'))
+  })
+
+  it('flat は kick より初速が速い', () => {
+    const hitPos = new Vector3(2, 0, COURT_HALF_LENGTH)
+    const target = new Vector3(-1.5, 0, -4)
+    function avgSpeed(st: ServeType): number {
+      let sum = 0
+      const trials = 20
+      for (let i = 0; i < trials; i++) {
+        sum += solveServe(hitPos, target, 0.78, 'player', st).vel.length()
+      }
+      return sum / trials
+    }
+    expect(avgSpeed('flat')).toBeGreaterThan(avgSpeed('kick'))
   })
 })

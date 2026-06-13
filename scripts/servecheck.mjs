@@ -1,0 +1,25 @@
+import { chromium } from 'playwright'
+const errors = []
+const browser = await chromium.launch()
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
+page.on('pageerror', (e) => errors.push('pageerror: ' + e.message))
+page.on('console', (m) => { if (m.type() === 'error') errors.push('console.error: ' + m.text()) })
+await page.goto('http://localhost:4173/', { waitUntil: 'networkidle' })
+await page.waitForTimeout(1000)
+await page.getByText(/start/i).first().click()
+await page.waitForTimeout(500)
+// サーブフェーズで L を押してスライスサーブを選択 → HUD 表示確認
+await page.keyboard.press('l')
+await page.waitForTimeout(300)
+await page.screenshot({ path: '/tmp/v3-serve-slice.png' })
+const hud1 = await page.evaluate(() => document.body.innerText.replace(/\n+/g,' | '))
+// K でキックに変更
+await page.keyboard.press('k')
+await page.waitForTimeout(300)
+const hud2 = await page.evaluate(() => document.body.innerText.replace(/\n+/g,' | '))
+console.log('after L (slice):', /SLICE|SERVE/i.test(hud1) ? hud1.match(/SERVE[^|]*/i)?.[0] : 'no serve label')
+console.log('after K (kick): ', hud2.match(/SERVE[^|]*/i)?.[0] || 'no serve label')
+console.log('errors:', errors.length)
+for (const e of errors.slice(0,5)) console.log(e)
+await browser.close()
+process.exit(errors.length>0?1:0)

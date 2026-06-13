@@ -14,6 +14,7 @@ import {
   type MatchConfig,
   type MatchStats,
   type RallyVerdict,
+  type ServeType,
   type ServiceBox,
   type ShotRequest,
   type Side,
@@ -146,7 +147,7 @@ function makeContext(self: Side): ControlContext {
     },
     predictLanding: () => ballSim.predictLanding(),
     requestShot: (req: ShotRequest) => handleShot(req),
-    requestServe: (power, aimX) => handleServe(self, power, aimX),
+    requestServe: (power, aimX, serveType) => handleServe(self, power, aimX, serveType),
   }
 }
 
@@ -168,7 +169,12 @@ function handleShot(req: ShotRequest): void {
   judge.onEvent({ kind: 'hit', by: req.hitter, shot: req.type }, ballSim.state)
 }
 
-function handleServe(server: Side, power: number, aimX: -1 | 0 | 1): void {
+function handleServe(
+  server: Side,
+  power: number,
+  aimX: -1 | 0 | 1,
+  serveType: ServeType,
+): void {
   if (phase !== 'serve' || score.view.server !== server) return
   const box = currentServiceBox(server)
   const ctrl = server === 'player' ? playerCtrl : aiCtrl
@@ -180,10 +186,11 @@ function handleServe(server: Side, power: number, aimX: -1 | 0 | 1): void {
   const xAim =
     aimX === 0 ? xCenter : aimX > 0 ? box.xMax - margin : box.xMin + margin
   const target = new Vector3(xAim, 0, box.zSign * (SERVICE_LINE_Z - 1.0))
-  const sol = solveServe(hitPos, target, power, server)
+  const sol = solveServe(hitPos, target, power, server, serveType)
   ballSim.launch(hitPos, sol.vel, sol.spin, server)
   judge.reset(server, box)
   judge.onEvent({ kind: 'hit', by: server, shot: 'flat' }, ballSim.state)
+  dbg(`serve ${server} ${serveType} power=${power.toFixed(2)} aimX=${aimX}`)
   sfx.play('serve', { intensity: power })
   renderer.sceneApi.spawnHitFx(hitPos.clone())
   phase = 'rally'
@@ -396,6 +403,13 @@ function frame(now: number): void {
 
   if (phase !== 'menu') {
     const pv = playerCtrl.view
+    // サーブフェーズ中はプレイヤーの頭上(+2.4m)を画面投影してサーブ種類ラベルを置く
+    let serveLabelScreen: { x: number; y: number } | null = null
+    if (phase === 'serve' && score.view.server === 'player') {
+      const head = pv.pos.clone()
+      head.y += 2.0
+      serveLabelScreen = renderer.worldToScreen(head)
+    }
     const hud: HudView = {
       score: score.view,
       playerStamina: pv.stamina,
@@ -405,6 +419,7 @@ function frame(now: number): void {
       phase,
       banner,
       charge: pv.charging ? { value: pv.charge, overcharged: pv.charge > 1 } : null,
+      serveLabelScreen,
     }
     ui.updateHud(hud)
   }

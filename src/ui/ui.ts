@@ -9,6 +9,7 @@ import type {
   MatchResult,
   Difficulty,
   MatchConfig,
+  ServeType,
 } from '../types'
 import {
   SERVE_SWEET_MIN,
@@ -53,6 +54,8 @@ interface HudCache {
   /** チャージバー: null=非表示、非 null=表示中 */
   chargeValue: number | null
   chargeOvercharged: boolean
+  /** 選択中のサーブ種類(サーブフェーズ表示用) */
+  serveType: ServeType
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +85,8 @@ export class UI {
   private readonly hudStaminaPlayerBar: HTMLElement
   private readonly hudStaminaOpponentBar: HTMLElement
   private readonly hudServeLabel: HTMLElement
+  /** サーブ種類ラベル(サーブフェーズ中に FLAT / SLICE / KICK を表示) */
+  private readonly hudServeTypeLabel: HTMLElement
   private readonly hudServeMeter: HTMLElement
   private readonly hudServeMeterFill: HTMLElement
   private readonly hudBanner: HTMLElement
@@ -107,6 +112,7 @@ export class UI {
     banner: undefined as unknown as null,
     chargeValue: undefined as unknown as null,
     chargeOvercharged: false,
+    serveType: 'flat',
   }
 
   constructor(root: HTMLElement, handlers: UIHandlers) {
@@ -129,6 +135,7 @@ export class UI {
     this.hudStaminaPlayerBar = hudRefs.staminaPlayerBar
     this.hudStaminaOpponentBar = hudRefs.staminaOpponentBar
     this.hudServeLabel = hudRefs.serveLabel
+    this.hudServeTypeLabel = hudRefs.serveTypeLabel
     this.hudServeMeter = hudRefs.serveMeter
     this.hudServeMeterFill = hudRefs.serveMeterFill
     this.hudBanner = hudRefs.banner
@@ -231,15 +238,36 @@ export class UI {
       c.serveMeterValue = serveMeter.value
     }
 
-    // --- サーブ番号ラベル(serve フェーズ時のみ) ---
-    if (phase !== c.phase || serveNumber !== c.serveNumber) {
+    // --- サーブ番号ラベル(上部中央)/ サーブ種類ラベル(プレイヤー頭上) ---
+    const currentServeType = serveMeter.serveType
+    // テキスト・色は変化時のみ更新(DOM 書き換え最小化)
+    if (phase !== c.phase || serveNumber !== c.serveNumber || currentServeType !== c.serveType) {
       const showServeLabel = phase === 'serve'
       this.hudServeLabel.classList.toggle('hidden', !showServeLabel)
       if (showServeLabel) {
         this.hudServeLabel.textContent = serveNumber === 1 ? '1st Serve' : '2nd Serve'
       }
+      const labelMap: Record<ServeType, string> = {
+        flat: 'FLAT',
+        slice: 'SLICE',
+        kick: 'KICK',
+      }
+      this.hudServeTypeLabel.textContent = labelMap[currentServeType]
+      this.hudServeTypeLabel.classList.remove('serve-type-flat', 'serve-type-slice', 'serve-type-kick')
+      this.hudServeTypeLabel.classList.add(`serve-type-${currentServeType}`)
       c.phase = phase
       c.serveNumber = serveNumber
+      c.serveType = currentServeType
+    }
+    // サーブ種類ラベルの表示・位置は毎フレーム更新(頭上座標が動くため)。
+    // プレイヤーがサーブする時のみ表示(view.serveLabelScreen が非 null)。
+    const sls = view.serveLabelScreen
+    if (phase === 'serve' && sls) {
+      this.hudServeTypeLabel.classList.remove('hidden')
+      this.hudServeTypeLabel.style.left = `${sls.x}px`
+      this.hudServeTypeLabel.style.top = `${sls.y}px`
+    } else {
+      this.hudServeTypeLabel.classList.add('hidden')
     }
 
     // --- バナー ---
@@ -435,6 +463,7 @@ export class UI {
       ['Hold shot key', 'Charge (stronger, but risky if overcharged)'],
       ['Move + Shot key', 'Aim direction'],
       ['Space (serve)', 'Power meter — release to serve'],
+      ['J / K / L (serve)', 'Serve type: Flat / Kick / Slice'],
       ['Esc', 'Pause / Title'],
     ]
     controlRows.forEach(([key, desc]) => {
@@ -474,6 +503,8 @@ export class UI {
     staminaPlayerBar: HTMLElement
     staminaOpponentBar: HTMLElement
     serveLabel: HTMLElement
+    /** サーブ種類ラベル(FLAT/SLICE/KICK) */
+    serveTypeLabel: HTMLElement
     serveMeter: HTMLElement
     serveMeterFill: HTMLElement
     banner: HTMLElement
@@ -528,6 +559,10 @@ export class UI {
     // --- サーブ番号ラベル ---
     const serveLabel = el('div', 'hud-serve-label hidden', '1st Serve')
     container.appendChild(serveLabel)
+
+    // --- サーブ種類ラベル(サーブ番号ラベルの下に表示) ---
+    const serveTypeLabel = el('div', 'hud-serve-type-label hidden', 'SERVE: FLAT')
+    container.appendChild(serveTypeLabel)
 
     // --- プレイヤー スタミナバー ---
     const staminaPlayer = el('div', 'hud-stamina player-side')
@@ -593,6 +628,7 @@ export class UI {
       ['長押し', 'チャージ'],
       ['移動+ショット', 'コース指定'],
       ['Space', 'サーブ'],
+      ['J/K/L(サーブ)', 'フラット/キック/スライス'],
       ['Esc', 'タイトル'],
     ]
     const keysTable = el('table', 'keys-table')
@@ -615,6 +651,7 @@ export class UI {
       staminaPlayerBar,
       staminaOpponentBar,
       serveLabel,
+      serveTypeLabel,
       serveMeter,
       serveMeterFill,
       banner,
@@ -645,6 +682,8 @@ export class UI {
       banner: undefined as unknown as null,
       chargeValue: undefined as unknown as null,
       chargeOvercharged: false,
+      // 空文字列で無効化し、次フレームで必ず再描画させる
+      serveType: '' as ServeType,
     }
   }
 }

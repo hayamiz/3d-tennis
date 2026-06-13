@@ -114,6 +114,21 @@ export class GameRenderer {
   }
 
   /**
+   * ワールド座標をキャンバス上の CSS ピクセル座標へ投影する(UI オーバーレイ配置用)。
+   * カメラの背後(画面外)にある場合は null を返す。
+   */
+  worldToScreen(world: THREE.Vector3): { x: number; y: number } | null {
+    const cam = this.cameraCtrl.threeCamera
+    const ndc = world.clone().project(cam)
+    // z>1 はカメラ後方(背後)。画面に映らないので null。
+    if (ndc.z > 1) return null
+    const canvas = this.renderer.domElement
+    const x = (ndc.x * 0.5 + 0.5) * canvas.clientWidth
+    const y = (-ndc.y * 0.5 + 0.5) * canvas.clientHeight
+    return { x, y }
+  }
+
+  /**
    * 毎フレーム呼ぶ。WorldView に基づいてシーンを更新してレンダリングする。
    * @param dt 前フレームからの経過時間(秒)
    * @param world ゲームのワールドビュー

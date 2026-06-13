@@ -9,6 +9,7 @@ import type {
   ControlContext,
   InputSource,
   PlayerView,
+  ServeType,
   ServeMeterView,
   Side,
   ShotType,
@@ -121,6 +122,8 @@ export class PlayerController implements Controller {
   private meterPhase = 0 // 0..SERVE_METER_PERIOD の累積時間
   // 現在のポイントのサーブサイド(true = 世界座標 +x 側 = right)。サーブ移動のクランプに使う
   private serveFromRight = true
+  // 選択中のサーブ種類(初期値 'flat'。J=flat, K=kick, L=slice)
+  private serveType: ServeType = 'flat'
 
   // InputSource(DI)
   private readonly input: InputSource
@@ -155,6 +158,9 @@ export class PlayerController implements Controller {
     return {
       active: this.meterActive,
       value: this.meterActive ? this.calcMeterValue() : 0,
+      // サーブフェーズ中は常に現在の serveType を返す(HUD 表示用)。
+      // メーター非アクティブ時も常に有効な値を返す。
+      serveType: this.serveType,
     }
   }
 
@@ -200,6 +206,8 @@ export class PlayerController implements Controller {
     this.chargeShot = null
     this.chargeCooldown = 0
     this.swingLockTimer = 0
+    // サーブ種類をフラット(デフォルト)に戻す(GAME_DESIGN §5.1)
+    this.serveType = 'flat'
 
     this.refreshView(false)
   }
@@ -247,6 +255,18 @@ export class PlayerController implements Controller {
     inp: import('../types').InputState,
     ctx: ControlContext,
   ): void {
+    // サーブフェーズ中は J/K/L でサーブ種類を選択(GAME_DESIGN §3, §5.1)
+    // shotPressed のエッジ検出を使う: 'flat'→flat, 'topspin'→kick, 'slice'→slice
+    // その他のキー(U/I など)は無視する
+    if (inp.shotPressed === 'flat') {
+      this.serveType = 'flat'
+    } else if (inp.shotPressed === 'topspin') {
+      this.serveType = 'kick'
+    } else if (inp.shotPressed === 'slice') {
+      this.serveType = 'slice'
+    }
+    // U/I など他のキーは無視(上記 if/else if の外なので何もしない)
+
     if (!this.meterActive) {
       // メーター開始前: サーブサイドの半面内で立ち位置を移動できる(GAME_DESIGN §5)
       this.applyServeMovement(dt, inp)
@@ -272,7 +292,8 @@ export class PlayerController implements Controller {
         const aimX: -1 | 0 | 1 =
           inp.moveX > 0 ? 1 : inp.moveX < 0 ? -1 : 0
 
-        ctx.requestServe(power, aimX)
+        // 選択中のサーブ種類を渡す(ARCHITECTURE §6.4)
+        ctx.requestServe(power, aimX, this.serveType)
 
         // サーブ後リセット
         this.meterActive = false

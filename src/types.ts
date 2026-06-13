@@ -14,6 +14,9 @@ export type Side = 'player' | 'opponent'
 
 export type ShotType = 'flat' | 'topspin' | 'slice' | 'lob' | 'drop'
 
+/** サーブの種類(docs/GAME_DESIGN.md §5.1)。flat=速い/低い、slice=曲がる/低い、kick=安全/高く弾む */
+export type ServeType = 'flat' | 'slice' | 'kick'
+
 export type Difficulty = 'easy' | 'normal' | 'hard'
 
 export type GamePhase = 'menu' | 'serve' | 'rally' | 'pointOver' | 'matchOver'
@@ -121,6 +124,8 @@ export interface ServeMeterView {
   active: boolean
   /** 0..1 */
   value: number
+  /** 現在選択中のサーブ種類(サーブフェーズ中の HUD 表示用) */
+  serveType: ServeType
 }
 
 /**
@@ -136,8 +141,8 @@ export interface ControlContext {
   predictLanding(): LandingPrediction | null
   /** ラリー中の打球要求。main がソルバ→BallSim.launch に接続する */
   requestShot(req: ShotRequest): void
-  /** サーブ発射要求。power 0..1、aimX: -1=左 0=中央 1=右 */
-  requestServe(power: number, aimX: -1 | 0 | 1): void
+  /** サーブ発射要求。power 0..1、aimX: -1=左 0=中央 1=右、serveType=サーブ種類 */
+  requestServe(power: number, aimX: -1 | 0 | 1, serveType: ServeType): void
   /** 現在サーブすべき側か(serve フェーズで自分がサーバーか) */
   isServing: boolean
   /** サーブ何本目か(1 or 2) */
@@ -267,6 +272,16 @@ export interface AIProfile {
   servePower1st: number
   /** サーブ power の平均(2nd) */
   servePower2nd: number
+  /**
+   * 明らかにアウトのボール(着地予測がコート外 AI_LEAVE_CLEAR_MARGIN 超)を
+   * 見送る確率 0..1(docs/GAME_DESIGN.md §7.1)。難易度が高いほど高い。
+   */
+  leaveOutClearProb: number
+  /**
+   * きわどいアウト(ラインぎりぎり外)のボールを見送る確率 0..1。
+   * 実際の見送り確率は outDist に応じて leaveOutEdgeProb..leaveOutClearProb を補間。
+   */
+  leaveOutEdgeProb: number
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +320,12 @@ export interface HudView {
   banner: string | null
   /** プレイヤーのチャージ状態(非チャージ時 null)。HUD のチャージバー用 */
   charge: { value: number; overcharged: boolean } | null
+  /**
+   * サーブ種類ラベルを表示するキャンバス上の座標(CSS px)。
+   * サーブフェーズでプレイヤーの頭上に表示するため main が投影して設定する。
+   * null のとき(非サーブ時や投影不可)はラベルを既定位置にしない=非表示扱い。
+   */
+  serveLabelScreen: { x: number; y: number } | null
 }
 
 export interface UIHandlers {

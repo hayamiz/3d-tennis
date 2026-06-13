@@ -10,6 +10,7 @@ import type {
   Controller,
   LandingPrediction,
   PlayerView,
+  ServeType,
   ServeMeterView,
   Side,
   ShotRequest,
@@ -23,6 +24,8 @@ import {
   AIM_OFFSET_Z,
   AI_SERVE_DELAY_MAX,
   AI_SERVE_DELAY_MIN,
+  AI_LEAVE_CLEAR_MARGIN,
+  BALL_RADIUS,
   CONTACT_PIVOT_HEIGHT,
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
@@ -35,6 +38,7 @@ import {
   QUALITY_MIN,
   REACH,
   REACH_HEIGHT,
+  RETURN_PACE_THRESH,
   SERVE_X_MARGIN_CENTER,
   SERVICE_LINE_Z,
   SHOT_PARAMS,
@@ -120,15 +124,21 @@ export class AIController implements Controller {
   private reactionTimer = 0 // 相手打球後の反応遅延の残り時間
   private lastSeenHitBy: Side | null = null // 直近に観測した lastHitBy(打球検出用)
   private blunderThisPoint = false // このポイントで凡ミスするか
+  // 見送り判定: 相手の打球がアウトと判断したら true(その球は打たずに見送る)。
+  // 1球ごとに一度だけ確率判定し、次の相手打球まで固定する。
+  private leaveCurrentBall = false
+  private leaveDecided = false
 
   // サーブ状態
   private serveDelayTimer = 0
   private serveArmed = false // サーブ待機中(遅延カウント中)か
   private hasServedThisPhase = false
+  /** このポイントで AI が選んだサーブ種類(resetForPoint か updateServe で決定) */
+  private chosenServeType: ServeType = 'flat'
 
   // ビュー(参照は固定。中身を更新する)
   private readonly _view: PlayerView
-  private readonly _serveMeter: ServeMeterView = { active: false, value: 0 }
+  private readonly _serveMeter: ServeMeterView = { active: false, value: 0, serveType: 'flat' }
 
   constructor(profile: AIProfile) {
     this.profile = profile
@@ -206,6 +216,8 @@ export class AIController implements Controller {
     this.swingSide = null
     this.reactionTimer = 0
     this.lastSeenHitBy = null
+    this.leaveCurrentBall = false
+    this.leaveDecided = false
 
     // 凡ミスをこのポイントで起こすか抽選
     this.blunderThisPoint = Math.random() < this.profile.blunderRate
@@ -215,6 +227,10 @@ export class AIController implements Controller {
     if (amServing) {
       this.serveArmed = true
       this.serveDelayTimer = lerp(AI_SERVE_DELAY_MIN, AI_SERVE_DELAY_MAX, Math.random())
+      // 1st サーブ用の種類を事前決定(2nd は updateServe 内で上書き)。
+      // aggressiveness が高いほど flat 寄り、低いほど slice 寄り。
+      this.chosenServeType = this.decideServeType(1)
+      this._serveMeter.serveType = this.chosenServeType
     } else {
       this.serveArmed = false
       this.serveDelayTimer = 0
@@ -224,6 +240,26 @@ export class AIController implements Controller {
   /** ゲーム間のスタミナ全回復(GAME_DESIGN §6) */
   recoverFullStamina(): void {
     this.stamina = STAMINA_MAX
+  }
+
+  // -------------------------------------------------------------------------
+  // サーブ種類の決定
+  // -------------------------------------------------------------------------
+  /**
+   * AI がサーブ種類を選ぶ。
+   * - 1st: aggressiveness が高いほど flat 寄り、低いほど slice 寄り。
+   *   各難易度の aggressiveness(0.25/0.5/0.75)に対して自然な分布になるよう設定。
+   *   flat の選択確率 ≈ aggr * 0.55 + 0.1、残りを slice に割り当てる。
+   * - 2nd: 呼び出し元(updateServe)が kick に強制するため、ここでは 1st のみ対象。
+   */
+  private decideServeType(serveNumber: 1 | 2): ServeType {
+    if (serveNumber === 2) return 'kick'
+    const aggr = this.profile.aggressiveness
+    // flat の確率: easy(0.25)≈ 0.24, normal(0.5)≈ 0.38, hard(0.75)≈ 0.51
+    const pFlat = aggr * 0.55 + 0.10
+    const r = Math.random()
+    if (r < pFlat) return 'flat'
+    return 'slice'
   }
 
   // -------------------------------------------------------------------------
@@ -262,9 +298,51 @@ export class AIController implements Controller {
 
     // --- rally 中 ---
     this.updateReaction(dt, ctx)
+    this.updateLeaveDecision(ctx)
     this.decideTarget(ctx)
     this.moveToward(dt)
     this.tryHit(ctx)
+  }
+
+  // -------------------------------------------------------------------------
+  // 見送り判定(アウトになりそうなボールは打たない)— GAME_DESIGN §7.1
+  // 相手の打球の着地予測がコート外なら、その球は見送る(きわどいものは確率的に)。
+  // 反応遅延の経過後・まだ自陣でバウンドしていない(bounceCount===0)球にのみ適用し、
+  // 1球につき一度だけ確率判定して固定する。
+  // -------------------------------------------------------------------------
+  private updateLeaveDecision(ctx: ControlContext): void {
+    // 自分が最後の打者、またはバウンド後(=インプレー確定)は見送らない
+    if (ctx.ball.lastHitBy === this.side || ctx.ball.bounceCount > 0) {
+      this.leaveCurrentBall = false
+      this.leaveDecided = false
+      return
+    }
+    // 既に判定済みなら再判定しない(1球につき一度だけ抽選して固定)。
+    // 着地予測は打球直後から有効なため反応遅延は待たない(速いアウト球を
+    // 反応前に打ってしまうのを防ぐ意味でも即時に見送りを判断する)。
+    if (this.leaveDecided) return
+
+    const pred = ctx.predictLanding()
+    // 予測なし(ネット衝突予測など)は判断材料がないので保留(打ちにいかせる)
+    if (!pred) return
+    // 自分側に来ない予測は無関係
+    if (!this.isOwnSide(pred.pos.z)) return
+
+    // コート外への「はみ出し距離」outDist(m)。正ならアウト。
+    const overBaseline = Math.abs(pred.pos.z) - COURT_HALF_LENGTH
+    const overSide = Math.abs(pred.pos.x) - COURT_HALF_WIDTH
+    const outDist = Math.max(overBaseline, overSide)
+
+    this.leaveDecided = true
+    if (outDist <= BALL_RADIUS) {
+      // コート内(ライン上含む)に収まる → 必ず打つ
+      this.leaveCurrentBall = false
+      return
+    }
+    // アウト: はみ出し量に応じて見送り確率を edge..clear で補間
+    const frac = clamp(outDist / AI_LEAVE_CLEAR_MARGIN, 0, 1)
+    const leaveProb = lerp(this.profile.leaveOutEdgeProb, this.profile.leaveOutClearProb, frac)
+    this.leaveCurrentBall = Math.random() < leaveProb
   }
 
   // -------------------------------------------------------------------------
@@ -303,7 +381,14 @@ export class AIController implements Controller {
       aimX = 0
     }
 
-    ctx.requestServe(power, aimX)
+    // サーブ種類の決定。2nd はフォルト後なので安全な kick に上書き。
+    // 1st はすでに resetForPoint で chosenServeType に入っているが、
+    // serveNumber が実際に 2 になっている場合は kick に差し替える。
+    const serveType: ServeType = ctx.serveNumber === 2 ? 'kick' : this.chosenServeType
+    // serveMeter に反映(HUD 表示用、active は false のまま)
+    this._serveMeter.serveType = serveType
+
+    ctx.requestServe(power, aimX, serveType)
     this.hasServedThisPhase = true
     this.serveArmed = false
     this.swingState = 'swing'
@@ -324,11 +409,16 @@ export class AIController implements Controller {
     if (hitBy === rival && this.lastSeenHitBy !== rival) {
       this.reactionTimer = this.profile.reactionDelay
       this.mode = 'intercept'
+      // 新しい相手打球 → 見送り判定をリセット(次の判定機会で再評価)
+      this.leaveDecided = false
+      this.leaveCurrentBall = false
     }
     // 自分が打った直後はホームへ戻るモードへ
     if (hitBy === this.side && this.lastSeenHitBy !== this.side) {
       this.mode = 'returning'
       this.reactionTimer = 0
+      this.leaveDecided = false
+      this.leaveCurrentBall = false
     }
     this.lastSeenHitBy = hitBy
 
@@ -348,7 +438,11 @@ export class AIController implements Controller {
     let goalX = 0
     let goalZ = homeZ
 
-    if (this.mode === 'intercept') {
+    if (this.leaveCurrentBall) {
+      // 見送ると決めた球は追わず、ホーム(やや前)へ戻って次に備える
+      goalX = 0
+      goalZ = homeZ
+    } else if (this.mode === 'intercept') {
       const pred = ctx.predictLanding()
       if (pred && this.isOwnSide(pred.pos.z)) {
         // 自分側に来る予測点へ。前後は予測点の少し後方に構える
@@ -471,6 +565,8 @@ export class AIController implements Controller {
     if (!ctx.ball.inPlay) return
     // 自分が最後に打っていないこと(相手の打球を返す)
     if (ctx.ball.lastHitBy === this.side) return
+    // アウトと判断して見送ると決めた球は打たない(GAME_DESIGN §7.1)
+    if (this.leaveCurrentBall) return
     // 空振り硬直中(whiff)は打てない
     if (this.swingState === 'whiff') return
 
@@ -591,6 +687,10 @@ export class AIController implements Controller {
     ]
     const shotTypes: ShotType[] = ['flat', 'topspin', 'slice', 'lob', 'drop']
 
+    // 打球直前のボール速度の大きさ(incomingSpeed)。
+    // ショット選択(evaluateShot)と ShotRequest の両方で使うためここで計算。
+    const incomingSpeed = Math.hypot(ctx.ball.vel.x, ctx.ball.vel.y, ctx.ball.vel.z)
+
     let best: { score: number; type: ShotType; targetX: number; targetZ: number } | null = null
 
     for (const type of shotTypes) {
@@ -615,6 +715,7 @@ export class AIController implements Controller {
             stretched,
             low,
             smashCondition,
+            incomingSpeed,
           })
 
           if (!best || score > best.score) {
@@ -651,9 +752,6 @@ export class AIController implements Controller {
     const lowChargeReducer = low * 0.4
     const charge = clamp(chargeBase - lowChargeReducer, 0, 1.0)
 
-    // 打球直前のボール速度の大きさ(incomingSpeed — ARCHITECTURE §6.1)
-    const incomingSpeed = Math.hypot(ctx.ball.vel.x, ctx.ball.vel.y, ctx.ball.vel.z)
-
     return {
       type: chosen.type,
       hitter: this.side,
@@ -679,9 +777,11 @@ export class AIController implements Controller {
       low: number
       /** スマッシュ条件(高打点 × 前寄り)が成立しているか */
       smashCondition: boolean
+      /** 打球直前のボール速度の大きさ(m/s)。速球への対応選択に使う */
+      incomingSpeed: number
     },
   ): number {
-    const { rivalPos, rivalIsForward, rivalIsDeep, stretched, low, smashCondition } = ctxInfo
+    const { rivalPos, rivalIsForward, rivalIsDeep, stretched, low, smashCondition, incomingSpeed } = ctxInfo
     const aggr = this.profile.aggressiveness
 
     let score = 0
@@ -736,6 +836,29 @@ export class AIController implements Controller {
     score += depthness * aggr * 0.6
 
     // ドロップは消極側がやや使う(aggr が低いと相対的に上げない)。基本は前後項で制御。
+
+    // --- 速球の返球(GAME_DESIGN §4.6 / ARCHITECTURE §6.2): 速いボールが来るほど
+    // スライス(ブロック)を選びやすくし、topspin/flat は差し込まれリスクがあるため減点。
+    // stretched(走らされ度合い)が大きいほど体勢が崩れているので効果を強める。
+    // 通常ラリーの球速(≤ RETURN_PACE_THRESH ≈ 26 m/s)では影響なし。 ---
+    const paceExcess = Math.max(0, incomingSpeed - RETURN_PACE_THRESH)
+    if (paceExcess > 0) {
+      // 速球超過を 0..1 に正規化(RETURN_OVERWHELM_RANGE=22 を参照; AI 評価では
+      // 超過量をそのまま重みのスケールとして使い、飽和を避けるため /30 で正規化)
+      const paceRatio = Math.min(paceExcess / 30, 1.0)
+      // 体勢が悪い(stretched大)ほどスライスの優先度をさらに上げる
+      const bodyFactor = 1.0 + stretched * 0.8
+      if (type === 'slice') {
+        // スライス/ブロックは速球に最も強い → 加点
+        score += paceRatio * bodyFactor * 2.5
+      } else if (type === 'topspin') {
+        // トップスピンは速球に最も弱い → 減点
+        score -= paceRatio * bodyFactor * 2.0
+      } else if (type === 'flat') {
+        // フラットは中間。タイミングがシビアなので体勢が悪い時は減点
+        score -= paceRatio * stretched * 1.2
+      }
+    }
 
     // --- ノイズ ---
     score += (Math.random() * 2 - 1) * 1.0
