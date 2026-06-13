@@ -19,7 +19,7 @@ function fakeInput(states) {
 
 // frames: { input, dist, vz }  vz>0=遠ざかる(receding), vz<0=近づく
 function run(label, frames) {
-  let shot = null, trigger = null
+  let shot = null, trigger = null, hitHDist = null
   const player = new PlayerController(fakeInput(frames.map((f) => f.input)), mods, p.physique)
   player.resetForPoint('opponent', true)
   const px = player.view.pos.x, pz = player.view.pos.z
@@ -29,7 +29,7 @@ function run(label, frames) {
     self: player.view, rival: { pos: new Vector3() },
     requestShot: (r) => { if (!shot) shot = r },
     requestServe: () => {}, predictLanding: () => null,
-    logDebug: (e) => { if (e.data && 'trigger' in e.data && !trigger) trigger = e.data.trigger },
+    logDebug: (e) => { if (e.data && 'trigger' in e.data && !trigger) { trigger = e.data.trigger; hitHDist = e.data.hDist } },
     serveNumber: 1, pressure: 0, momentum: 0,
   }
   for (const f of frames) {
@@ -38,7 +38,7 @@ function run(label, frames) {
     player.update(DT, ctx)
     if (shot) break
   }
-  console.log(`${label}: hit=${shot ? 'yes' : 'NO'} just=${shot ? shot.just : '-'} trigger=${trigger ?? '-'}`)
+  console.log(`${label}: hit=${shot ? 'yes' : 'NO'} just=${shot ? shot.just : '-'} trigger=${trigger ?? '-'} hDist=${hitHDist ?? '-'}`)
 }
 
 const press = { shotPressed: 'topspin', shotHeld: 'topspin' }
@@ -69,13 +69,25 @@ run('(4) リーチ外でリリース', [
   { input: press, dist: FAR, vz: -8 }, { input: hold, dist: FAR, vz: -8 },
   { input: release, dist: FAR, vz: -8 },
 ])
-// (5) 山なり/ロブが真下に落下、未リリース → 垂直セーフティで打てる(空振りしない・回帰修正)
-//     真下に落ちる球は水平に遠ざからないので、旧コードでは空振りしていた。
+// (5) 山なり/ロブが真下に落下(水平速度小)、未リリース → 垂直セーフティで打てる(空振りしない)
 run('(5) 落下ロブ・未リリース(垂直セーフティ)', [
-  { input: press, dist: 0.4, y: 2.8, vy: -5 }, // 高すぎて打てない(y>2.4)
-  { input: hold, dist: 0.4, y: 2.5, vy: -5 },  // まだ打てない
-  { input: hold, dist: 0.4, y: 2.2, vy: -5 },  // 打てる・高い → 待ち(リリースで just/smash 可)
-  { input: hold, dist: 0.4, y: 1.5, vy: -5 },  // 打てる・y>1.2 → 待ち
-  { input: hold, dist: 0.4, y: 1.0, vy: -5 },  // y≤1.2 下降 → 垂直セーフティ発火
+  { input: press, dist: 0.4, y: 2.8, vy: -5, vz: -0.5 }, // 高すぎて打てない(y>2.9 ではないが…)
+  { input: hold, dist: 0.4, y: 2.2, vy: -5, vz: -0.5 },  // 打てる・高い → 待ち
+  { input: hold, dist: 0.4, y: 1.5, vy: -5, vz: -0.5 },  // 打てる・y>1.2 → 待ち
+  { input: hold, dist: 0.4, y: 1.0, vy: -5, vz: -0.5 },  // y≤1.2・ほぼ真下 → 垂直セーフティ
+])
+// (6) 低い「下降」球が速く近づく・未リリース → 近づき中は垂直セーフティを出さず、最接近(hDist小)で発動
+//     旧コードはリーチ端(hDist≈2)で即セーフティしていた回帰の確認(low dipping topspin 相当)。
+run('(6) 低い下降近づき球・未リリース(最接近で safety)', [
+  { input: press, dist: 2.05, y: 1.2, vy: -3, vz: -12 },
+  { input: hold, dist: 1.4, y: 1.1, vy: -3, vz: -12 },  // 近づき中(closingRate大)→ まだ出さない
+  { input: hold, dist: 0.6, y: 1.0, vy: -3, vz: -12 },  // まだ近づき中 → 出さない
+  { input: hold, dist: 0.5, y: 1.0, vy: -3, vz: -1 },   // 近づき止む → ここで safety(芯近く)
+])
+// (7) 低い下降近づき球を芯でリリース → just
+run('(7) 低い下降近づき球・芯でリリース(just)', [
+  { input: press, dist: 2.05, y: 1.2, vy: -3, vz: -12 },
+  { input: hold, dist: 1.4, y: 1.1, vy: -3, vz: -12 },
+  { input: release, dist: 0.6, y: 1.0, vy: -3, vz: -12 }, // 芯(≤1.0)でリリース → just
 ])
 console.log(`(reach=${reach.toFixed(2)}m, sweet=${JUST_SWEET_DIST}m)`)

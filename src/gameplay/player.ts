@@ -57,6 +57,7 @@ import {
   CHARGE_RELEASE_COOLDOWN,
   JUST_SWEET_DIST,
   SAFETY_DROP_Y,
+  SAFETY_APPROACH_RATE,
   SERVE_X_MARGIN_CENTER,
   SERVE_Z_MIN_BEHIND,
   SERVE_Z_MAX_BEHIND,
@@ -485,8 +486,13 @@ export class PlayerController implements Controller {
     //   垂直: 下降中かつ低い(y ≤ SAFETY_DROP_Y)。真下に落ちてくる山なり/ロブ/スマッシュ用。
     //         水平には遠ざからない(真下に落ちる)ため、これがないと空振りしていた(回帰修正)。
     if (hittable) {
-      const recedingH = dx * ball.vel.x + dz * ball.vel.z > 0
-      const droppingLow = ball.vel.y < 0 && ball.pos.y <= SAFETY_DROP_Y
+      const dot = dx * ball.vel.x + dz * ball.vel.z
+      const recedingH = dot > 0
+      // 水平の近づき速度(+ = 近づいている)。明確に近づいている間は垂直セーフティを抑制し、
+      // 芯(hDist≤sweet)に入れて just を狙う余地を残す(低い球のノーバウンド取りで早発火を防ぐ)。
+      const closingRate = hDist > 1e-3 ? -dot / hDist : 0
+      const droppingLow =
+        ball.vel.y < 0 && ball.pos.y <= SAFETY_DROP_Y && closingRate < SAFETY_APPROACH_RATE
       if (droppingLow || (recedingH && hDist > JUST_SWEET_DIST)) {
         this.executeShot(shotType, inp, ctx, isSprinting, false, hDist, 'safety')
       }
