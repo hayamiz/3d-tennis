@@ -54,8 +54,8 @@ function swingCoil(p: number): number {
 }
 
 // ジャストミート飛行着色(§6.1.1 (B))。既定色 ↔ 金色を timer で補間する。
-const JUST_BALL_FLASH_TIME = 0.35 // 秒
-const JUST_GOLD = new THREE.Color(0xffcf6a)
+const JUST_BALL_FLASH_TIME = 0.55 // 秒
+const JUST_GOLD = new THREE.Color(0xffd24a)
 const BALL_EMISSIVE_DEFAULT = new THREE.Color(0xb8d000) // 本体 emissive 既定
 const HALO_COLOR_DEFAULT = new THREE.Color(0xffffff) // ハロー Sprite の color 既定(白×金テクスチャ)
 const TRAIL_COLOR_DEFAULT = new THREE.Color(0xeaff5a) // トレイル既定色
@@ -227,13 +227,19 @@ export class BallEntity {
     const haloMat = this.halo.material as THREE.SpriteMaterial
     if (k > 0) {
       sphereMat.emissive.lerpColors(BALL_EMISSIVE_DEFAULT, JUST_GOLD, k)
-      sphereMat.emissiveIntensity = 0.6 + 0.5 * k
+      sphereMat.emissiveIntensity = 0.6 + 1.4 * k
       haloMat.color.lerpColors(HALO_COLOR_DEFAULT, JUST_GOLD, k)
+      haloMat.opacity = 0.85 + 0.15 * k
+      // ジャスト直後はハローを脈動させて存在感を強める
+      this.halo.scale.setScalar(HALO_RADIUS * 2 * (1 + 0.6 * k))
       this.trailMat.color.lerpColors(TRAIL_COLOR_DEFAULT, JUST_GOLD, k)
+      this.trailMat.opacity = 1
     } else {
       sphereMat.emissive.copy(BALL_EMISSIVE_DEFAULT)
       sphereMat.emissiveIntensity = 0.6
       haloMat.color.copy(HALO_COLOR_DEFAULT)
+      haloMat.opacity = 0.85
+      this.halo.scale.setScalar(HALO_RADIUS * 2)
       this.trailMat.color.copy(TRAIL_COLOR_DEFAULT)
     }
   }

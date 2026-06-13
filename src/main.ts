@@ -198,6 +198,9 @@ function computeOpenCourt(): { x: number; z: number; strength: number } | null {
  */
 function computeMeetHint(): { eta: number; x: number; z: number; sweet: boolean } | null {
   if (phase !== 'rally' || !ballSim.state.inPlay) return null
+  // タイミングヒントは easy / normal のみ常時表示。それ以外の難易度はデバッグモード時のみ。
+  const hintAllowed = config.difficulty === 'easy' || config.difficulty === 'normal' || debugMode
+  if (!hintAllowed) return null
   // 自分が打った球は対象外(相手から来る球のみ)
   if (ballSim.state.lastHitBy === 'player') return null
   if (!playerCtrl) return null

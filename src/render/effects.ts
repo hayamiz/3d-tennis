@@ -17,12 +17,13 @@ const HIT_FX_MAX_SCALE = 1.2
 const HIT_FX_POOL_SIZE = 4
 
 // ジャストミート発光(金白)のパラメータ(IMPROVEMENTS §6.1.1 (A))
-const JUST_FX_DURATION = 0.28
+const JUST_FX_DURATION = 0.4 // 視認性のためやや長く
 const JUST_FX_POOL_SIZE = 4
-const JUST_FX_SPARK_COUNT = 6
-const JUST_FX_RING_MAX = 1.1 // リング最大半径相当スケール(m)
-const JUST_FX_SPARK_DIST = 0.9 // スパークが飛ぶ距離(m)
-const JUST_FX_COLOR = 0xffe6a0 // 金白(チーム青赤・ボール黄と被らない特別色)
+const JUST_FX_SPARK_COUNT = 10 // スパーク数を増やす
+const JUST_FX_RING_MAX = 1.9 // リング最大半径相当スケール(m)。大きく広げる
+const JUST_FX_SPARK_DIST = 1.5 // スパークが飛ぶ距離(m)
+const JUST_FX_FLASH_MAX = 0.9 // 中心閃光(ブルーム)の最大スケール(m)
+const JUST_FX_COLOR = 0xfff2c0 // 明るい金白(コート上で映える)
 
 interface FxInstance {
   mesh: THREE.Mesh
@@ -35,6 +36,8 @@ interface FxInstance {
 interface JustFxInstance {
   group: THREE.Group
   ring: THREE.Mesh
+  /** 中心の閃光(ブルーム風スプライト) */
+  flash: THREE.Sprite
   sparks: THREE.Mesh[]
   /** スパークの放射方向(x-y 平面、初期化時に等間隔で固定) */
   sparkDirs: THREE.Vector3[]
@@ -116,8 +119,8 @@ export class EffectSystem implements SceneApi {
   // ジャストミート発光プール(金白のリング + スパーク。x-y 平面=カメラ向き)
   // ---------------------------------------------------------------------------
   private initJustPool(): void {
-    const ringGeo = new THREE.RingGeometry(0.05, 0.13, 28)
-    const sparkGeo = new THREE.SphereGeometry(0.035, 6, 5)
+    const ringGeo = new THREE.RingGeometry(0.05, 0.16, 32)
+    const sparkGeo = new THREE.SphereGeometry(0.04, 6, 5)
     const mat = new THREE.MeshBasicMaterial({
       color: JUST_FX_COLOR,
       transparent: true,
@@ -126,6 +129,7 @@ export class EffectSystem implements SceneApi {
       depthWrite: false,
       side: THREE.DoubleSide,
     })
+    const glowTex = makeGlowTexture()
 
     for (let i = 0; i < JUST_FX_POOL_SIZE; i++) {
       const group = new THREE.Group()
@@ -133,6 +137,17 @@ export class EffectSystem implements SceneApi {
       group.renderOrder = 25
       const ring = new THREE.Mesh(ringGeo, mat.clone())
       group.add(ring)
+      // 中心の閃光(ブルーム): カメラ常時向きの Sprite
+      const flashMat = new THREE.SpriteMaterial({
+        map: glowTex,
+        color: JUST_FX_COLOR,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+      const flash = new THREE.Sprite(flashMat)
+      group.add(flash)
       const sparks: THREE.Mesh[] = []
       const dirs: THREE.Vector3[] = []
       for (let s = 0; s < JUST_FX_SPARK_COUNT; s++) {
@@ -143,7 +158,7 @@ export class EffectSystem implements SceneApi {
         dirs.push(new THREE.Vector3(Math.cos(ang), Math.sin(ang), 0))
       }
       this.scene.add(group)
-      this.justPool.push({ group, ring, sparks, sparkDirs: dirs, active: false, timer: 0, startPos: new THREE.Vector3() })
+      this.justPool.push({ group, ring, flash, sparks, sparkDirs: dirs, active: false, timer: 0, startPos: new THREE.Vector3() })
     }
   }
 
@@ -193,6 +208,7 @@ export class EffectSystem implements SceneApi {
     inst.group.position.copy(pos)
     inst.group.visible = true
     inst.ring.scale.setScalar(0.4)
+    inst.flash.scale.setScalar(0.2)
     for (const sp of inst.sparks) sp.position.set(0, 0, 0)
   }
 
@@ -222,6 +238,10 @@ export class EffectSystem implements SceneApi {
       inst.ring.scale.setScalar(ringScale)
       const opacity = 1.0 - t
       ;(inst.ring.material as THREE.MeshBasicMaterial).opacity = opacity
+      // 中心閃光(ブルーム): 序盤に強く光り、速めにフェード(t^... で先細り)
+      const flashFade = Math.max(0, 1 - t / 0.5) // 前半で消える
+      inst.flash.scale.setScalar(0.2 + JUST_FX_FLASH_MAX * Math.min(1, t / 0.15))
+      ;(inst.flash.material as THREE.SpriteMaterial).opacity = flashFade * flashFade
       const sparkDist = JUST_FX_SPARK_DIST * ease
       const sparkScale = 1.0 - t
       for (let s = 0; s < inst.sparks.length; s++) {
@@ -257,6 +277,8 @@ export class EffectSystem implements SceneApi {
     }
   }
 
+  // glow テクスチャ生成は下部のモジュール関数 makeGlowTexture を使用
+
   private getFreeInstance(pool: FxInstance[]): FxInstance | null {
     for (const inst of pool) {
       if (!inst.active) return inst
@@ -272,4 +294,22 @@ export class EffectSystem implements SceneApi {
     }
     return oldest
   }
+}
+
+/** 放射状グラデーション(中心白→外周透明)のグロー用テクスチャを生成する(1度だけ) */
+function makeGlowTexture(): THREE.Texture {
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+  g.addColorStop(0, 'rgba(255,255,255,1)')
+  g.addColorStop(0.35, 'rgba(255,255,255,0.7)')
+  g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, size, size)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.needsUpdate = true
+  return tex
 }
