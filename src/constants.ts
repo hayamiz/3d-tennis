@@ -368,17 +368,25 @@ export const HOME_POS_Z = COURT_HALF_LENGTH - 0.3
 // ---------------------------------------------------------------------------
 // AI 戦術スタンス(ベースライン / ネット)— GAME_DESIGN §7.1 / ARCHITECTURE §11
 // 入射球ごとに「後ろで打ち合う(baseline)」か「前へ詰めてボレー(net)」かを判断する。
-// スコア = netRushTendency(ペルソナ性格) + 短い球ボーナス − 速球ペナルティ。
-// これが AI_NET_APPROACH_THRESH を超えたら net、超えなければ baseline。
+// 既定はベースラインのラリー。短い球(チャンス)が来たときだけ前へ詰める。
+//   chance = shortFactor − AI_NET_PACE_W·paceFactor(浅い球で+、速球で−)
+//   need   = lerp(AI_APPROACH_NEED_MAX, AI_APPROACH_NEED_MIN, netRushTendency)
+//   chance > need のとき net。ネット型(tendency 大)ほど need が小さく、小さなチャンスでも前へ。
+//   グラインダー(tendency≈0)は need が大きく、実質ベースライン専となる。
+// 旧実装は score = tendency + 0.5·short − 0.5·pace > 0.62 で、tendency≈0.86 のネット型が
+// 中庸な球でも常に net を選び「毎球ネットダッシュ」になっていた(往復で消耗)。
 // ---------------------------------------------------------------------------
-/** ネットへ詰めると判断する合成スコアの閾値 */
-export const AI_NET_APPROACH_THRESH = 0.62
-/** 短い球(着地がネット寄り)ほど詰めの好機。AI_SHORT_BALL_Z 以内で最大の加点重み */
-export const AI_NET_SHORT_W = 0.5
+/** 前へ詰めるのに要するチャンス量。tendency=0(グラインダー)側。実質ほぼ前に出ない */
+export const AI_APPROACH_NEED_MAX = 1.1
+/** 前へ詰めるのに要するチャンス量。tendency=1(ネット鬼)側。中庸〜やや浅い球で前へ */
+export const AI_APPROACH_NEED_MIN = -0.05
 /** 着地のネットからの距離がこれ以下なら「短い球」(好機)。超では負に効く(深い球は詰めにくい) */
 export const AI_SHORT_BALL_Z = SERVICE_LINE_Z + 1.0 // 7.4m
 /** 速球は詰めにくい。RETURN_PACE_THRESH 超過分に応じて減点する重み */
 export const AI_NET_PACE_W = 0.5
+/** ネットへ詰めた後の待機(リカバリ)深さ(m)。詰めたらベースラインへ戻らずこの前目で構える。
+ * 次球が深ければ intercept 時に baseline スタンスへ切り替わり後退する(無駄な往復を避ける)。 */
+export const AI_NET_READY_Z = 5.0
 /** ベースライン時、着地点より深く(ネットから遠く)下がって構える距離(m)。上がり際で打つ。
  * ただし短い球(ドロップ等)はバウンド後に伸びないので後退せず、着地点よりやや前に出て拾う
  * (BUG-002 対策。short の度合いで後退量を AI_BASELINE_DROPBACK→ −AI_SHORT_FORWARD へ補間)。 */

@@ -298,7 +298,7 @@ ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ sp
 リーチ        : effReach = REACH * m.reachMul(打球可否ゲートと距離品質係数の両方で使う)
 スタミナ上限  : effStaminaMax = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
 利き手        : physique.handedness==='left' なら swingSide(fore/back)判定を左右反転
-戦術スタンス  : ai.ts のみ。m.netRushTendency(0..1、倍率でなく傾向値)が baseline/net 判断の基礎点(§11)
+戦術スタンス  : ai.ts のみ。m.netRushTendency(0..1、倍率でなく傾向値)が前へ出やすさ(必要チャンス量)を決める(§11)
 
 スタミナ消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2-5.5):
   毎フレーム dStamina/dt = +STAMINA_REGEN_IDLE·m.staminaRegenMul·m.clutchRecoveryMul
@@ -419,13 +419,20 @@ GAME_DESIGN §7.2 の表が constants.ts にある)で挙動を決める。
 - **状態**: `returning`(ホームへ)/ `intercept`(予測点へ)/ `recover`。
 - **戦術スタンス**(GAME_DESIGN §7.1): `stance: 'baseline' | 'net'`。相手の新しい打球ごとに
   一度だけ `decideStance` で決定(`stanceDecided` でガード、`updateReaction` の打者遷移で解除)。
-  スコア `= mods.netRushTendency + AI_NET_SHORT_W·shortFactor − AI_NET_PACE_W·paceFactor` を
-  `AI_NET_APPROACH_THRESH` と比較。`shortFactor` は着地のネットからの距離が `AI_SHORT_BALL_Z`
+  **既定はベースラインのラリー。短い球(チャンス)が来たときだけ前へ詰める**。
+  `chance = shortFactor − AI_NET_PACE_W·paceFactor` が、性格で決まる必要量
+  `need = lerp(AI_APPROACH_NEED_MAX, AI_APPROACH_NEED_MIN, netRushTendency)` を超えたら `net`。
+  ネット型(tendency 大)ほど `need` が小さく小さなチャンスでも前へ、グラインダー(tendency≈0)は
+  `need` が大きく実質ベースライン専。`shortFactor` は着地のネットからの距離が `AI_SHORT_BALL_Z`
   以内で正(短い球=好機)、深いほど負。`paceFactor` は `RETURN_PACE_THRESH` 超過球速の正規化値。
   `intercept` の移動目標 z は `stanceGoalZ` で算出: **baseline** は着地点 |z| + `AI_BASELINE_DROPBACK`
   だけ深く、**net** は着地点 |z| − `AI_NET_ADVANCE` だけ前(下限 `AI_NET_MIN_Z`)。最終的に可動域
   (`MOVE_Z_MIN/MAX`)へクランプ。`netRushTendency` は `personaModifiers()` がペルソナ能力値
   (finesse/serve/speed 高で前、stamina/spin 高で後ろ)から導出する(§6.5)。
+- **リカバリ位置のスタンス連動**: 打球後の `returning`/見送り時のホーム z は、直前が `net` スタンス
+  なら前目の待機位置 `AI_NET_READY_Z`(中央へ recenter)、`baseline` ならベースライン `HOME_POS_Z`。
+  次球が深ければ `intercept` で baseline へ切り替わり後退するため、毎球「ベースライン↔ネット」を
+  往復して消耗する挙動を避ける。
 - **アウトの見送り**(GAME_DESIGN §7.1): 相手の新しい打球ごとに一度だけ判定。
   `predictLanding()` の着地が自陣コート外なら、はみ出し距離 `outDist` に応じて
   `leaveOutEdgeProb`(ライン際)〜`leaveOutClearProb`(`AI_LEAVE_CLEAR_MARGIN` 超)を

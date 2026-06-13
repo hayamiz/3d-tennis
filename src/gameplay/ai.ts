@@ -24,12 +24,13 @@ import {
   AIM_NOISE_R,
   AIM_OFFSET_X,
   AIM_OFFSET_Z,
+  AI_APPROACH_NEED_MAX,
+  AI_APPROACH_NEED_MIN,
   AI_BASELINE_DROPBACK,
   AI_NET_ADVANCE,
-  AI_NET_APPROACH_THRESH,
   AI_NET_MIN_Z,
   AI_NET_PACE_W,
-  AI_NET_SHORT_W,
+  AI_NET_READY_Z,
   AI_SHORT_FORWARD,
   AI_SERVE_DELAY_MAX,
   AI_SERVE_DELAY_MIN,
@@ -587,7 +588,11 @@ export class AIController implements Controller {
   // -------------------------------------------------------------------------
   private decideTarget(ctx: ControlContext): void {
     const sign = sideSign(this.side) // -1
-    const homeZ = sign * HOME_POS_Z
+    // リカバリ(ホーム)位置: 直前が net スタンス(前へ詰めた)ならベースラインまで戻らず
+    // 前目の待機位置 AI_NET_READY_Z で中央に構える。深い次球が来れば intercept 時に baseline
+    // スタンスへ切り替わって後退するので、毎球の「ベースライン↔ネット」往復による消耗を避ける。
+    const readyDepth = this.stance === 'net' ? AI_NET_READY_Z : HOME_POS_Z
+    const homeZ = sign * readyDepth
 
     // 反応遅延中は目標を更新しない(直前の目標へ動き続ける)
     if (this.reactionTimer > 0) return
@@ -667,14 +672,15 @@ export class AIController implements Controller {
 
   // -------------------------------------------------------------------------
   // 戦術スタンス判断(ベースラインで打ち合う / 前へ詰めてボレー)— GAME_DESIGN §7.1
-  // 入射球ごとに一度だけ、ペルソナの性格(netRushTendency)と局面(着地の深さ・球速)から
-  // スコアを合成し、AI_NET_APPROACH_THRESH を超えたら 'net'、超えなければ 'baseline'。
+  // 既定はベースラインのラリー。短い球(チャンス)が来たときだけ前へ詰める。
+  // chance(浅い球で+/速球で−)が、ペルソナ性格 netRushTendency から決まる need を超えたら net。
+  // ネット型ほど need が小さく小さなチャンスでも前へ、グラインダーは実質ベースライン専。
   // -------------------------------------------------------------------------
   private decideStance(ctx: ControlContext, pred: LandingPrediction): void {
     if (this.stanceDecided) return
     this.stanceDecided = true
 
-    // 性格: ネット型は基礎点が高い
+    // 性格: ネット型ほど前へ出やすい(= 必要チャンス need が小さい)
     const tendency = this.mods.netRushTendency
 
     // 局面1: 短い球(着地がネット寄り)ほど詰めの好機。深い球は負に効く(詰めにくい)。
@@ -686,8 +692,11 @@ export class AIController implements Controller {
     const pace = Math.hypot(ctx.ball.vel.x, ctx.ball.vel.y, ctx.ball.vel.z)
     const paceFactor = clamp((pace - RETURN_PACE_THRESH) / 20, 0, 1)
 
-    const score = tendency + AI_NET_SHORT_W * shortFactor - AI_NET_PACE_W * paceFactor
-    this.stance = score > AI_NET_APPROACH_THRESH ? 'net' : 'baseline'
+    // チャンス量と、性格で決まる必要チャンス need を比較。
+    const chance = shortFactor - AI_NET_PACE_W * paceFactor
+    const need = lerp(AI_APPROACH_NEED_MAX, AI_APPROACH_NEED_MIN, tendency)
+    this.stance = chance > need ? 'net' : 'baseline'
+    const score = chance - need // ログ用(>0 で net)
 
     ctx.logDebug?.({
       kind: 'note',
