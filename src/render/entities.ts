@@ -32,6 +32,27 @@ const HALO_RADIUS = BALL_DRAW_RADIUS * 2.8
 // 着地予測リングの基準半径(m)
 const LANDING_RING_RADIUS = 0.4
 
+// 向き(facing): 横移動でネット側を向いたまま左右に傾ける量。
+const FACE_LATERAL_REF = 7.0 // この横速度(m/s)で最大の傾き
+const FACE_LATERAL_MAX = 0.85 // 前方ベクトルの横成分の最大(大きいほど横を向く)
+
+/** 角度を最短経路で補間する(2π 跨ぎの「後ろ回り」を防ぐ) */
+function lerpAngle(a: number, b: number, t: number): number {
+  let d = b - a
+  d -= Math.PI * 2 * Math.round(d / (Math.PI * 2))
+  return a + d * t
+}
+
+/**
+ * 地上ストロークの体の横向き量(rad)を進行 p(0..1)で返す。
+ * テイクバックで深く横向き(コイル)→ 振り抜きで正面寄りへ戻す。netYaw からのオフセット。
+ */
+function swingCoil(p: number): number {
+  if (p < 0.3) return THREE.MathUtils.lerp(0.5, 1.0, p / 0.3) // 引きで横向きに
+  if (p < 0.6) return THREE.MathUtils.lerp(1.0, 0.3, (p - 0.3) / 0.3) // 振り抜きで戻す
+  return THREE.MathUtils.lerp(0.3, 0.0, (p - 0.6) / 0.4) // フォロー→正面
+}
+
 // ジャストミート飛行着色(§6.1.1 (B))。既定色 ↔ 金色を timer で補間する。
 const JUST_BALL_FLASH_TIME = 0.35 // 秒
 const JUST_GOLD = new THREE.Color(0xffcf6a)
@@ -423,6 +444,7 @@ export class CharacterEntity {
   private swinging = false
   private swingDir: 'fore' | 'back' = 'fore'
   private swingSmash = false // このスイングがスマッシュ(オーバーヘッド)か
+  private readonly faceSign: number // ネット方向の z 符号(player:-1, opponent:+1)。向き制御用
   private whiffAngle = 0
   private footCycle = 0 // 走りモーションの位相
   private chargeShake = 0 // オーバーチャージの震え位相
@@ -452,6 +474,8 @@ export class CharacterEntity {
   constructor(scene: THREE.Scene, opts: CharacterEntityOptions) {
     this.group = new THREE.Group()
     scene.add(this.group)
+    // ネット方向の z 符号(player は手前 z>0 でネットは -z 側、opponent は逆)
+    this.faceSign = opts.team === 'player' ? -1 : 1
 
     // -------------------------------------------------------------------------
     // スケール値の計算
@@ -827,13 +851,32 @@ export class CharacterEntity {
     // キャラクター位置
     this.group.position.set(view.pos.x, 0, view.pos.z)
 
-    // 進行方向に向く + 前傾(従来挙動を踏襲)
+    // スイング状態を先に更新(向きの分岐で swing フラグを使うため)
+    this.updateSwingState(view)
+
+    // 向き(facing):
+    // - 地上ストローク中(フォア/バック)は体を横に向けて打つ(side-on、リアリティ)。
+    // - それ以外(移動・待機・スマッシュ)は常にネット側(コート中央)を向き、横移動で傾ける。
+    //   → 右↔左の方向転換がコート外(+z=後ろ)ではなくネット側を通る(lerpAngle=最短角度補間)。
+    // faceSign = ネット方向の z 符号(player:-1, opponent:+1)。netYaw = ネット正対の rotation.y。
     const speed = Math.sqrt(view.vel.x ** 2 + view.vel.z ** 2)
-    if (speed > 0.5) {
-      const dir = Math.atan2(view.vel.x, view.vel.z)
-      // 鏡像(scale.x=-1)でも前方ベクトル(+z)は不変なので、向きは movement 方向そのまま。
-      // (旧実装は rotation.y=π で鏡像化していたためオフセットが要ったが、scale 方式では不要)
-      this.group.rotation.y = THREE.MathUtils.lerp(this.group.rotation.y, dir, 8 * dt)
+    const netYaw = Math.atan2(0, this.faceSign)
+    const groundStroke = this.swinging && !this.swingSmash
+    let targetY: number
+    if (groundStroke) {
+      // コイル: テイクバックで深く横向き→振り抜きで正面寄りへ戻す。
+      // 向きはフォア/バックで反対。鏡像(scale.x)で左右反転するので乗算して整合させる。
+      const coil = swingCoil(this.swingPhase)
+      const dirSign = this.swingDir === 'fore' ? 1 : -1
+      targetY = netYaw + coil * dirSign * this.group.scale.x
+    } else {
+      const lateralX = THREE.MathUtils.clamp(view.vel.x / FACE_LATERAL_REF, -1, 1) * FACE_LATERAL_MAX
+      targetY = Math.atan2(lateralX, this.faceSign)
+    }
+    // スイング中は素早く向きを作る
+    this.group.rotation.y = lerpAngle(this.group.rotation.y, targetY, (this.swinging ? 16 : 8) * dt)
+    // 走行時の体の前傾(横方向のリーン)。スイング中は出さない。
+    if (speed > 0.5 && !this.swinging) {
       const tilt = Math.min(speed / 8.0, 1.0) * 0.12
       this.group.rotation.z = THREE.MathUtils.lerp(
         this.group.rotation.z,
@@ -844,7 +887,6 @@ export class CharacterEntity {
       this.group.rotation.z = THREE.MathUtils.lerp(this.group.rotation.z, 0, 5 * dt)
     }
 
-    this.updateSwingState(view)
     this.updateLegs(dt, speed, view)
     this.updateArms(dt, view)
 
