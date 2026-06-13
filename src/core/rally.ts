@@ -96,6 +96,9 @@ export class RallyJudge {
   /** このラリーでの最後の打者(最後に hit イベントを発した側) */
   private lastHitter: Side | null = null
 
+  /** このポイントのサーバー(サーブフェーズの判定・ノーバウンド返球の検出に使う) */
+  private server: Side | null = null
+
   /** ネットイベントが発生したか(次のバウンス判定に使う) */
   private _netHit: boolean = false
 
@@ -112,6 +115,7 @@ export class RallyJudge {
     this.phase = 'serve'
     this.serveTargetBox = serveTargetBox
     this.lastHitter = server
+    this.server = server
     this._netHit = false
   }
 
@@ -123,7 +127,13 @@ export class RallyJudge {
    */
   onEvent(e: BallEvent, ball: BallState): RallyVerdict | null {
     if (e.kind === 'hit') {
-      // ヒットイベント: 打者を更新し、サーブ後のラリーに移行するかを管理
+      // サーブフェーズ中にレシーバー(サーバー以外)が打った = サーブを
+      // ノーバウンド(ボレー)で返球した。サーブは成立として通常ラリーへ移行する
+      // (BUG-001: 移行しないと返球後の着地がサーブのフォルト判定として誤処理される)。
+      if (this.phase === 'serve' && this.server !== null && e.by !== this.server) {
+        this.phase = 'rally'
+      }
+      // ヒットイベント: 打者を更新
       this.lastHitter = e.by
       this._netHit = false
       return null

@@ -410,6 +410,34 @@ describe('RallyJudge — winner reason', () => {
 })
 
 // ---------------------------------------------------------------------------
+// BUG-001: サーブをノーバウンドで返球すると通常ラリーへ移行する
+// ---------------------------------------------------------------------------
+
+describe('RallyJudge — サーブのノーバウンド返球(BUG-001)', () => {
+  it('レシーバーがサーブをノーバウンドで返すと、返球の着地はフォルトでなく通常判定になる', () => {
+    // player サーブ
+    judge.reset('player', PLAYER_SERVE_BOX)
+    judge.onEvent(hitEvent('player'), makeBall({})) // サーブ打球(by=server)
+    // レシーバー(opponent)がノーバウンドで返球(サーブはまだ bounce していない)
+    const v1 = judge.onEvent(hitEvent('opponent'), makeBall({}))
+    expect(v1).toBeNull()
+    // 返球が player コート内に着地 → フォルトではなく通常ラリーのイン(決着なし)
+    const v2 = judge.onEvent(bounceEvent(2.0, 8.0), makeBall({ bounceCount: 1, lastHitBy: 'opponent' }))
+    expect(v2).toBeNull() // フォルトが出ない
+  })
+
+  it('返球がアウトなら out(フォルトではない)', () => {
+    judge.reset('player', PLAYER_SERVE_BOX)
+    judge.onEvent(hitEvent('player'), makeBall({}))
+    judge.onEvent(hitEvent('opponent'), makeBall({}))
+    // 返球が player コート外(ベースライン奥)に着地 → out(打った opponent の失点)
+    const v = judge.onEvent(bounceEvent(2.0, COURT_HALF_LENGTH + 1), makeBall({ bounceCount: 1, lastHitBy: 'opponent' }))
+    expect(v?.reason).toBe('out')
+    expect(v?.winner).toBe('player')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // reset で状態が正しくリセットされる
 // ---------------------------------------------------------------------------
 
