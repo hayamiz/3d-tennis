@@ -20,6 +20,7 @@ import {
   NET_RESTITUTION,
   NET_DAMP,
   BALL_RADIUS,
+  activeSurface,
 } from '../constants'
 
 // 作業用ベクトル(GC 削減のため使い回す)
@@ -39,14 +40,18 @@ function integrate(state: BallState, dt: number, events: BallEvent[]): void {
   const { pos, vel, spin } = state
   _prevPos.copy(pos)
 
+  // サーフェス係数(ES module ライブバインディング)を毎ステップ参照する。
+  // setSurface() による切替がそのまま物理に反映される(hard は全 mul=1.0 で従来一致)。
+  const surfaceDrag = KD * activeSurface.dragMul
+
   // --- 加速度: 重力 − 空気抵抗(2次)+ マグナス ---
   const speed = vel.length()
-  // a = (0,-g,0) - KD*|v|*v + KM*(ω×v)
+  // a = (0,-g,0) - KD*dragMul*|v|*v + KM*(ω×v)
   _acc.set(0, -GRAVITY, 0)
   if (speed > 0) {
-    _acc.x -= KD * speed * vel.x
-    _acc.y -= KD * speed * vel.y
-    _acc.z -= KD * speed * vel.z
+    _acc.x -= surfaceDrag * speed * vel.x
+    _acc.y -= surfaceDrag * speed * vel.y
+    _acc.z -= surfaceDrag * speed * vel.z
   }
   _magnus.copy(spin).cross(vel).multiplyScalar(KM)
   _acc.add(_magnus)
@@ -80,11 +85,12 @@ function integrate(state: BallState, dt: number, events: BallEvent[]): void {
   // --- 地面バウンス: y ≤ BALL_RADIUS かつ vy < 0 ---
   if (pos.y <= BALL_RADIUS && vel.y < 0) {
     pos.y = BALL_RADIUS
-    // 反発(鉛直)
-    vel.y = -REST * vel.y
-    // 水平摩擦
-    vel.x *= 1 - BOUNCE_FRICTION
-    vel.z *= 1 - BOUNCE_FRICTION
+    // 反発(鉛直): サーフェスの restMul を乗算(clay は高く・grass は低く跳ねる)
+    vel.y = -REST * activeSurface.restMul * vel.y
+    // 水平摩擦: friction 側に frictionMul を乗算(clay は食いついて減速・grass は滑る)
+    const surfaceFriction = BOUNCE_FRICTION * activeSurface.frictionMul
+    vel.x *= 1 - surfaceFriction
+    vel.z *= 1 - surfaceFriction
     // スピン→水平速度変換: 進行方向 d に対し (ω × ŷ) の水平成分を加える。
     // 規約 §5.4: ω = spinScalar·(d × ŷ) なので (ω × ŷ) = spinScalar·((d×ŷ)×ŷ) = -spinScalar·d_水平。
     // → トップスピン(spinScalar>0)は前方(d 方向)へ加速する向きになるよう符号を取る。

@@ -5,9 +5,10 @@
 // setMatchup(player, opponent) でペルソナ変更時にキャラクターを再構成する。
 // =============================================================================
 import * as THREE from 'three'
-import type { SceneApi, WorldView, PersonaPhysique, PersonaAppearance } from '../types'
-import { PLAYER_PERSONAS } from '../constants'
+import type { SceneApi, WorldView, PersonaPhysique, PersonaAppearance, Surface } from '../types'
+import { PLAYER_PERSONAS, SURFACE_PARAMS } from '../constants'
 import { buildCourt, buildSkyDome } from './court'
+import type { CourtHandles } from './court'
 import { BallEntity, CharacterEntity } from './entities'
 import { CameraController } from './camera'
 import { EffectSystem } from './effects'
@@ -181,6 +182,9 @@ export class GameRenderer {
   // オープンコート床ハイライト(IMPROVEMENTS §4 高)
   private readonly openCourtHighlight: OpenCourtHighlight
 
+  // サーフェス色変更用コートハンドル(setSurface から参照)
+  private readonly courtHandles: CourtHandles
+
   constructor(canvas: HTMLCanvasElement) {
     // -------------------------------------------------------------------------
     // WebGLRenderer セットアップ
@@ -226,7 +230,9 @@ export class GameRenderer {
     // 背景スカイドームとコート
     // -------------------------------------------------------------------------
     buildSkyDome(this.scene)
-    buildCourt(this.scene)
+    const courtGroup = buildCourt(this.scene)
+    // コートマテリアルのハンドルを保持(setSurface で色変更に使う)
+    this.courtHandles = courtGroup.handles
 
     // -------------------------------------------------------------------------
     // カメラ
@@ -298,6 +304,21 @@ export class GameRenderer {
     const x = (ndc.x * 0.5 + 0.5) * canvas.clientWidth
     const y = (-ndc.y * 0.5 + 0.5) * canvas.clientHeight
     return { x, y }
+  }
+
+  /**
+   * マッチ開始時に呼ぶ。コートサーフェスに応じてコート面・ラインの色を変更する。
+   * SURFACE_PARAMS の courtColor / lineColor をマテリアルに反映する。
+   * テクスチャ不要で色変更のみ(外部アセットなし)。
+   *
+   * @param surface コートサーフェス('clay' | 'grass' | 'hard')
+   */
+  setSurface(surface: Surface): void {
+    const params = SURFACE_PARAMS[surface]
+    // コート面の色を更新
+    this.courtHandles.courtMat.color.setHex(params.courtColor)
+    // ライン色を更新
+    this.courtHandles.lineMat.color.setHex(params.lineColor)
   }
 
   /**

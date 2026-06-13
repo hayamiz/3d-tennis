@@ -36,6 +36,7 @@ import {
   personaModifiers,
   SERVE_HIT_HEIGHT,
   SERVICE_LINE_Z,
+  setSurface,
   STAMINA_MAX,
 } from './constants'
 import { BallSim } from './physics/ball'
@@ -98,6 +99,7 @@ let config: MatchConfig = {
   gamesToWin: 2,
   playerPersona: 'federun',
   opponentPersona: 'jokovin',
+  surface: 'hard',
 }
 // 各サイドのペルソナ倍率(startMatch で確定)。サーブ倍率・打点高に使う。
 let playerMods: PersonaModifiers = personaModifiers(PLAYER_PERSONAS.federun.ratings, PLAYER_PERSONAS.federun.mental)
@@ -512,6 +514,9 @@ function startMatch(cfg: MatchConfig): void {
   opponentMods = personaModifiers(opponentPersona.ratings, opponentPersona.mental)
   playerCtrl = new PlayerController(sharedInput, playerMods, playerPersona.physique)
   aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique)
+  // サーフェスを適用(物理スケール + コート色)
+  setSurface(cfg.surface)
+  renderer.setSurface(cfg.surface)
   // 3Dモデルをペルソナの体格・外見・チームカラーで再構成
   renderer.setMatchup(
     { physique: playerPersona.physique, appearance: playerPersona.appearance },

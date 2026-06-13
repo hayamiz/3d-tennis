@@ -15,6 +15,8 @@ import {
   SHOT_PARAMS,
   SERVICE_LINE_Z,
   NEUTRAL_PERSONA_MODIFIERS,
+  setSurface,
+  VOLLEY_SPEED_CAP,
 } from '../src/constants'
 import type { PersonaModifiers } from '../src/types'
 
@@ -778,5 +780,118 @@ describe('ペルソナ倍率の適用(ARCHITECTURE §6.5)', () => {
     const steady = landingSpread(withMods({ aimNoiseMul: 0.7 })) // スピン安定が高い
     const shaky = landingSpread(withMods({ aimNoiseMul: 1.3 })) // スピン安定が低い
     expect(shaky).toBeGreaterThan(steady)
+  })
+})
+
+describe('コートサーフェス(GAME_DESIGN §13 / ARCHITECTURE §5)', () => {
+  /** 同一初速の打球を1バウンドさせ、バウンド後の最高到達高を返す。 */
+  function bouncePeak(): number {
+    const sim = new BallSim()
+    // ベースライン付近から相手コートへ。バウンド後のピークを比較する。
+    const hitPos = new Vector3(0, 1.0, 10)
+    const vel = new Vector3(0, 5, -20)
+    sim.launch(hitPos, vel, new Vector3(), 'player')
+    return peakAfterBounce(sim)
+  }
+
+  it('clay は hard より高く跳ね、grass は低く跳ねる(hard は回帰)', () => {
+    // hard(基準=全 mul 1.0)はサーフェス実装前と同一挙動になること。
+    setSurface('hard')
+    const hardPeak = bouncePeak()
+    setSurface('clay')
+    const clayPeak = bouncePeak()
+    setSurface('grass')
+    const grassPeak = bouncePeak()
+    // 必ず hard に戻す(他テストへの汚染防止)。
+    setSurface('hard')
+    const hardPeak2 = bouncePeak()
+    setSurface('hard')
+
+    // clay は高反発、grass は低反発。
+    expect(clayPeak).toBeGreaterThan(hardPeak)
+    expect(grassPeak).toBeLessThan(hardPeak)
+    // hard は決定的なので前後で完全一致(回帰)。
+    expect(hardPeak2).toBeCloseTo(hardPeak, 10)
+  })
+})
+
+describe('ボレー(ネットプレー / GAME_DESIGN §4.7)', () => {
+  /** sol を実シミュレートして 1 バウンド目の着地点を得る(ネット衝突なら null)。 */
+  function landOf(hitPos: Vector3, sol: { vel: Vector3; spin: Vector3 }): Vector3 | null {
+    const sim = new BallSim()
+    sim.launch(hitPos, sol.vel, sol.spin, 'player')
+    for (let s = 0; s < 2000; s++) {
+      const events = sim.step(PHYS_DT)
+      if (events.some((e) => e.kind === 'net')) return null
+      for (const e of events) if (e.kind === 'bounce') return e.pos.clone()
+    }
+    return null
+  }
+
+  it('前寄り中打点の flat ボレーはベースライン flat より初速が低い(VOLLEY_SPEED_CAP 頭打ち)', () => {
+    const target = new Vector3(0, 0, -9)
+    // ベースライン(z≈10)の通常フラット。
+    const baselinePos = new Vector3(0, 1.0, 10)
+    const baseline = solveShot({
+      type: 'flat',
+      hitter: 'player',
+      hitPos: baselinePos,
+      target,
+      quality: 1.0,
+      charge: 1.0, // 溜めて強打
+      incomingSpeed: 12,
+    })
+    // 前寄り(z≈3)・中打点(y≈1.0)のボレー。
+    const volleyPos = new Vector3(0, 1.0, 3)
+    const volley = solveShot({
+      type: 'flat',
+      hitter: 'player',
+      hitPos: volleyPos,
+      target,
+      quality: 1.0,
+      charge: 1.0,
+      incomingSpeed: 12,
+    })
+    // ボレーは振り抜かないため初速が低く、上限以下に収まる。
+    expect(volley.vel.length()).toBeLessThan(baseline.vel.length())
+    expect(volley.vel.length()).toBeLessThanOrEqual(VOLLEY_SPEED_CAP + 0.5)
+  })
+
+  it('ボレー(flat)は同位置・同目標の非ボレー(topspin)より着地が安定する', () => {
+    // 同一の前寄り打点・同一目標で比較し、幾何条件を揃えて VOLLEY_AIM_MUL の
+    // 効果のみを見る。flat は前寄り中打点なのでボレー(狙い誤差を縮小)、
+    // topspin はボレー対象外(flat/slice のみ)なので通常の狙い誤差。
+    // どちらも狙い誤差倍率は aimNoiseMul 系で同条件なので、差はボレー補正のみ。
+    const hitPos = new Vector3(0, 1.0, 3) // 前寄り中打点
+    const target = new Vector3(0, 0, -8)
+    function landingSd(type: 'flat' | 'topspin'): number {
+      const xs: number[] = []
+      const zs: number[] = []
+      for (let i = 0; i < 200; i++) {
+        const sol = solveShot({
+          type,
+          hitter: 'player',
+          hitPos,
+          target,
+          quality: 0.5, // ノイズ発生
+          charge: 0,
+          incomingSpeed: 12,
+        })
+        const land = landOf(hitPos, sol)
+        if (land) {
+          xs.push(land.x)
+          zs.push(land.z)
+        }
+      }
+      const mean = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length
+      const variance = (a: number[]) => {
+        const mm = mean(a)
+        return a.reduce((s, v) => s + (v - mm) * (v - mm), 0) / a.length
+      }
+      return Math.sqrt(variance(xs) + variance(zs))
+    }
+    const volleySd = landingSd('flat') // ボレー(正確)
+    const normalSd = landingSd('topspin') // 非ボレー(通常の狙い誤差)
+    expect(volleySd).toBeLessThan(normalSd)
   })
 })

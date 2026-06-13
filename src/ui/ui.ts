@@ -11,6 +11,7 @@ import type {
   MatchConfig,
   ServeType,
   PersonaId,
+  Surface,
 } from '../types'
 import {
   SERVE_SWEET_MIN,
@@ -23,6 +24,8 @@ import {
   PERSONA_ORDER,
   MOMENTUM_FULL_STREAK,
   TUNABLES,
+  SURFACE_PARAMS,
+  SURFACE_ORDER,
 } from '../constants'
 
 // ---------------------------------------------------------------------------
@@ -297,6 +300,8 @@ export class UI {
   // メニュー内の選択状態
   private selectedDifficulty: Difficulty = 'normal'
   private selectedGamesToWin: 1 | 2 | 4 = 2
+  /** 選択中のサーフェス(デフォルト: ハード) */
+  private selectedSurface: Surface = 'hard'
 
   // HUD 要素(差分更新のためにキャッシュ)
   private readonly hudPointPlayer: HTMLElement
@@ -1179,6 +1184,27 @@ export class UI {
     gamesGroup.appendChild(gamesButtons)
     options.appendChild(gamesGroup)
 
+    // サーフェス選択(クレー / グラス / ハード)
+    const surfaceGroup = el('div', 'option-group')
+    surfaceGroup.appendChild(el('div', 'option-label', 'Surface'))
+    const surfaceButtons = el('div', 'option-buttons')
+
+    const surfaceBtnMap = new Map<Surface, HTMLButtonElement>()
+    SURFACE_ORDER.forEach(s => {
+      const label = SURFACE_PARAMS[s].label
+      const btn = el('button', `opt-btn${s === this.selectedSurface ? ' selected' : ''}`, label)
+      btn.addEventListener('click', () => {
+        this.selectedSurface = s
+        surfaceBtnMap.forEach((b, key) => {
+          b.classList.toggle('selected', key === s)
+        })
+      })
+      surfaceBtnMap.set(s, btn)
+      surfaceButtons.appendChild(btn)
+    })
+    surfaceGroup.appendChild(surfaceButtons)
+    options.appendChild(surfaceGroup)
+
     screen.appendChild(options)
 
     // --- ペルソナ選択セクション ---
@@ -1218,6 +1244,7 @@ export class UI {
         gamesToWin: this.selectedGamesToWin,
         playerPersona: playerPickerResult.getPersonaId(),
         opponentPersona: opponentPickerResult.getPersonaId(),
+        surface: this.selectedSurface,
       }
       this.handlers.onStart(config)
     })

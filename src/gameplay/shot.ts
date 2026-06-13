@@ -67,7 +67,16 @@ import {
   RETURN_MISHIT_SPRAY,
   MISHIT_ACTIVE_EPS,
   SERVE_TYPE_PARAMS,
+  VOLLEY_MAX_HEIGHT,
+  VOLLEY_SPEED_CAP,
+  VOLLEY_AIM_MUL,
+  VOLLEY_CHARGE_MUL,
 } from '../constants'
+
+/** ボレー成立の打点高さ下限(これ以上 VOLLEY_MAX_HEIGHT 未満) */
+const VOLLEY_MIN_HEIGHT = 0.6
+/** ボレー成立の前寄り判定(|hitPos.z| ≤ この距離) */
+const VOLLEY_MAX_DEPTH = 5.0
 
 // 補正反復・検証回数の上限(§6 手順4・5)
 const CORRECTION_ITERS = 4
@@ -232,6 +241,18 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // 前寄りでの低打点リスク増幅係数(fore=0 で 1、fore=1 で FORECOURT_LOW_AMP)
   const foreLowAmp = 1 + FORECOURT_LOW_AMP * fore - fore
 
+  // --- ボレー(ネットプレー)判定(GAME_DESIGN §4.7)---
+  // スマッシュ分岐(下で先に return)に該当せず、前寄りでバウンド前に捉えた
+  // flat/slice の「ブロック/パンチ」。振り抜かず正確に置く。
+  // 条件: 種別が flat/slice、前寄り(|hitPos.z| ≤ VOLLEY_MAX_DEPTH)、
+  //       打点高が [VOLLEY_MIN_HEIGHT, VOLLEY_MAX_HEIGHT)。
+  // 中立(ベースライン: depth 大)では fore も含め一切該当しないため従来挙動。
+  const isVolley =
+    (req.type === 'flat' || req.type === 'slice') &&
+    depth <= VOLLEY_MAX_DEPTH &&
+    h >= VOLLEY_MIN_HEIGHT &&
+    h < VOLLEY_MAX_HEIGHT
+
   // 修飾後の目標。文脈ノイズ・depthBias を反映する基点として複製。
   const target = req.target.clone()
   target.y = 0
@@ -284,10 +305,13 @@ export function solveShot(req: ShotRequest): ShotSolution {
   const spinMul = req.type === 'topspin' ? 1 + HIGH_CONTACT_SPIN_GAIN * high : 1
 
   // depthBias(m): 打点→目標の水平方向に「より深く」加算 → アウト方向
+  // ボレー時は前寄りフラットの深さオーバー(FORECOURT_FLAT_OVERSHOOT 由来)を
+  // 適用しない(暴れずに置くブロック/パンチ。GAME_DESIGN §4.7)。
   const flatSliceWeight = req.type === 'flat' ? 1 : req.type === 'slice' ? 0.5 : 0
-  const depthBias =
-    LOW_POWER_OVERSHOOT * low * powerExcess * foreLowAmp +
-    FORECOURT_FLAT_OVERSHOOT * fore * (1 - high) * flatSliceWeight
+  const forecourtOvershoot = isVolley
+    ? 0
+    : FORECOURT_FLAT_OVERSHOOT * fore * (1 - high) * flatSliceWeight
+  const depthBias = LOW_POWER_OVERSHOOT * low * powerExcess * foreLowAmp + forecourtOvershoot
 
   // aimNoiseAdd: ランダム誤差半径に加算。
   // pace 由来(相手球の勢いによる制御難)の誤差にはペルソナの returnTouchMul を乗算。
@@ -308,7 +332,13 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // --- 合成 ---
   // 初速にペルソナのショット速度倍率(shotSpeedMul)を乗算。pace リダイレクト分は
   // 倍率の外で加算する(相手球の勢い由来であり打者のパワーには依らない)。
-  const speed = param.speed * powerScale * chargePower * speedMul * m.shotSpeedMul + speedAdd
+  // ボレーはチャージ威力寄与を VOLLEY_CHARGE_MUL 倍に弱める(溜めても効きにくい)。
+  const effChargePower = isVolley
+    ? 1 + (chargePower - 1) * VOLLEY_CHARGE_MUL
+    : chargePower
+  let speed = param.speed * powerScale * effChargePower * speedMul * m.shotSpeedMul + speedAdd
+  // ボレーは振り抜かないため初速を VOLLEY_SPEED_CAP で頭打ちにする。
+  if (isVolley) speed = Math.min(speed, VOLLEY_SPEED_CAP)
   let spinScalar = param.spinScalar * spinMul
   // ネット越えマージンにペルソナの netMarginMul を乗算(スピン安定が高いほど安全)。
   let netMargin = param.netMargin * netMarginScale * netMarginMul * m.netMarginMul
@@ -377,8 +407,10 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // pace 由来の誤差は既に returnTouchMul を反映済みなので二重に掛けない。
   const typeNoiseMul =
     req.type === 'flat' || req.type === 'topspin' ? m.aimNoiseMul : m.touchNoiseMul
-  const noiseR = (baseNoiseR + aimNoiseMishit - paceAimNoise * m.returnTouchMul) * typeNoiseMul +
+  let noiseR = (baseNoiseR + aimNoiseMishit - paceAimNoise * m.returnTouchMul) * typeNoiseMul +
     paceAimNoise * m.returnTouchMul
+  // ボレー(ブロック)は狙いが正確: 狙い誤差全体を VOLLEY_AIM_MUL 倍に縮める。
+  if (isVolley) noiseR *= VOLLEY_AIM_MUL
   if (noiseR > 0) {
     const ang = Math.random() * Math.PI * 2
     const r = Math.sqrt(Math.random()) * noiseR

@@ -11,6 +11,7 @@ import type {
   PersonaRatings,
   ServeType,
   ShotType,
+  Surface,
 } from './types'
 
 // ---------------------------------------------------------------------------
@@ -552,3 +553,60 @@ export const TUNABLES: Tunable[] = [
     get: () => CHARGE_POWER_GAIN, set: (v) => { CHARGE_POWER_GAIN = v },
   },
 ]
+
+// ---------------------------------------------------------------------------
+// コートサーフェス(docs/GAME_DESIGN.md §13 / IMPROVEMENTS §4中)
+// バウンドの反発・水平摩擦・空気抵抗を係数でスケールし、球速とバウンド高を変える。
+// clay = 遅い/高く跳ねる(グラインダー有利)、grass = 速い/低く滑る(サーバー有利)、
+// hard = 中間(基準=全て1.0)。ball.ts が activeSurface を毎バウンド/積分で参照する。
+// ---------------------------------------------------------------------------
+export interface SurfaceParam {
+  label: string
+  /** バウンド反発 REST への倍率(高いほど高く跳ねる) */
+  restMul: number
+  /** バウンド水平摩擦 BOUNCE_FRICTION への倍率(高いほど食いついて減速=遅い) */
+  frictionMul: number
+  /** 空気抵抗 KD への倍率(高いほど失速=遅いコート) */
+  dragMul: number
+  /** コート面の色(描画用) */
+  courtColor: number
+  /** ライン色(描画用) */
+  lineColor: number
+}
+
+export const SURFACE_PARAMS: Record<Surface, SurfaceParam> = {
+  // クレー: 高く跳ね、食いついて減速、やや失速 → 遅く高い(グラインダー有利)
+  clay: { label: 'クレー', restMul: 1.12, frictionMul: 1.3, dragMul: 1.12, courtColor: 0xb5532b, lineColor: 0xf0e8d8 },
+  // グラス: 低く滑り、摩擦小で速い、失速少 → 速く低い(サーバー有利)
+  grass: { label: 'グラス', restMul: 0.82, frictionMul: 0.65, dragMul: 0.92, courtColor: 0x3f7d3a, lineColor: 0xf2f2f2 },
+  // ハード: 中間(基準)
+  hard: { label: 'ハード', restMul: 1.0, frictionMul: 1.0, dragMul: 1.0, courtColor: 0x2f6db0, lineColor: 0xf2f2f2 },
+}
+
+export const SURFACE_ORDER: Surface[] = ['hard', 'clay', 'grass']
+
+/**
+ * 現在のサーフェス係数(マッチ開始時に setSurface で確定)。
+ * ball.ts はこのオブジェクトのフィールドを毎フレーム参照する(ES module ライブバインディング)。
+ */
+export let activeSurface: SurfaceParam = SURFACE_PARAMS.hard
+
+/** マッチ開始時にサーフェスを設定(ball.ts の物理スケールへ即反映) */
+export function setSurface(s: Surface): void {
+  activeSurface = SURFACE_PARAMS[s]
+}
+
+// ---------------------------------------------------------------------------
+// ボレー(ネットプレー)— docs/GAME_DESIGN.md §4.7 / IMPROVEMENTS §4中
+// 前寄り(forecourt)でバウンド前(ボレー)に捉えた flat/slice は、振り抜かない
+// ブロック/パンチになる: 威力は控えめだが狙いは正確、チャージ効果は小さい。
+// スマッシュ(高い打点)には該当しない。passing/lob の読み合いは既存の lob で成立。
+// ---------------------------------------------------------------------------
+/** ボレー成立の打点高さ上限(これ未満の前寄り無バウンド flat/slice をボレー扱い) */
+export const VOLLEY_MAX_HEIGHT = 1.7
+/** ボレーの初速上限(m/s)。振り抜かないため頭打ち */
+export const VOLLEY_SPEED_CAP = 26
+/** ボレーの狙い誤差倍率(ブロックは正確) */
+export const VOLLEY_AIM_MUL = 0.6
+/** ボレー時のチャージ威力寄与の倍率(溜めても効きにくい) */
+export const VOLLEY_CHARGE_MUL = 0.4

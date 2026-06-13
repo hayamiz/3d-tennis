@@ -19,6 +19,9 @@ export type ServeType = 'flat' | 'slice' | 'kick'
 
 export type Difficulty = 'easy' | 'normal' | 'hard'
 
+/** コートサーフェス(docs/GAME_DESIGN.md §13)。バウンド/球速/色が変わる */
+export type Surface = 'clay' | 'grass' | 'hard'
+
 // ---------------------------------------------------------------------------
 // プレイヤーペルソナ(プレイスタイル/能力タイプ) — docs/GAME_DESIGN.md §12
 // ---------------------------------------------------------------------------
@@ -367,6 +370,8 @@ export interface MatchConfig {
   playerPersona: PersonaId
   /** 相手 AI のペルソナ */
   opponentPersona: PersonaId
+  /** コートサーフェス(docs/GAME_DESIGN.md §13) */
+  surface: Surface
 }
 
 export interface MatchStats {

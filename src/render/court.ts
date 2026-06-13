@@ -17,9 +17,20 @@ import {
 const LINE_WIDTH = 0.05
 const LINE_RAISE = 0.002 // z ファイティング防止
 
-/** シングルスコートのすべてのジオメトリを scene に追加し、Group を返す */
-export function buildCourt(scene: THREE.Scene): THREE.Group {
-  const group = new THREE.Group()
+/**
+ * buildCourt が返すハンドル。
+ * コート面とラインの色を後から更新できるよう、マテリアル参照を公開する。
+ */
+export interface CourtHandles {
+  /** コート面(サーフェス)の MeshLambertMaterial */
+  courtMat: THREE.MeshLambertMaterial
+  /** ライン(白線)の MeshLambertMaterial */
+  lineMat: THREE.MeshLambertMaterial
+}
+
+/** シングルスコートのすべてのジオメトリを scene に追加し、Group と CourtHandles を返す */
+export function buildCourt(scene: THREE.Scene): THREE.Group & { handles: CourtHandles } {
+  const group = new THREE.Group() as THREE.Group & { handles: CourtHandles }
   scene.add(group)
 
   // -------------------------------------------------------------------------
@@ -33,9 +44,9 @@ export function buildCourt(scene: THREE.Scene): THREE.Group {
   group.add(ground)
 
   // -------------------------------------------------------------------------
-  // クレーコート面(レンガ色)
+  // コート面(初期色はハードコート=青系。setSurface で後から変更可能)
   // -------------------------------------------------------------------------
-  const courtMat = new THREE.MeshLambertMaterial({ color: 0xb85c2a })
+  const courtMat = new THREE.MeshLambertMaterial({ color: 0x2f6db0 })
   const courtGeo = new THREE.PlaneGeometry(COURT_WIDTH + 2.0, COURT_LENGTH + 2.0)
   const court = new THREE.Mesh(courtGeo, courtMat)
   court.rotation.x = -Math.PI / 2
@@ -44,9 +55,9 @@ export function buildCourt(scene: THREE.Scene): THREE.Group {
   group.add(court)
 
   // -------------------------------------------------------------------------
-  // コートライン(白い細長い PlaneGeometry)
+  // コートライン(初期色は白。setSurface で後から変更可能)
   // -------------------------------------------------------------------------
-  const lineMat = new THREE.MeshLambertMaterial({ color: 0xffffff })
+  const lineMat = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 })
 
   /** 横方向(x 軸)の白ライン */
   function addHLine(z: number, width: number): void {
@@ -95,6 +106,9 @@ export function buildCourt(scene: THREE.Scene): THREE.Group {
   // 簡易スタンド(両サイドに段々の箱)
   // -------------------------------------------------------------------------
   buildStands(group)
+
+  // コート面・ラインマテリアルをハンドルとして公開(setSurface で色変更に使う)
+  group.handles = { courtMat, lineMat }
 
   return group
 }
