@@ -24,8 +24,15 @@ import {
   AIM_NOISE_R,
   AIM_OFFSET_X,
   AIM_OFFSET_Z,
+  AI_BASELINE_DROPBACK,
+  AI_NET_ADVANCE,
+  AI_NET_APPROACH_THRESH,
+  AI_NET_MIN_Z,
+  AI_NET_PACE_W,
+  AI_NET_SHORT_W,
   AI_SERVE_DELAY_MAX,
   AI_SERVE_DELAY_MIN,
+  AI_SHORT_BALL_Z,
   AI_LEAVE_CLEAR_MARGIN,
   BALL_RADIUS,
   CONTACT_PIVOT_HEIGHT,
@@ -139,6 +146,10 @@ export class AIController implements Controller {
 
   // 行動状態
   private mode: AiMode = 'returning'
+  // 戦術スタンス: 'baseline'=後ろで打ち合う(着地点より深く構える) /
+  // 'net'=前へ詰めてボレー(着地点より前に出る)。入射球ごとに decideStance で決める。
+  private stance: 'baseline' | 'net' = 'baseline'
+  private stanceDecided = false // この入射球についてスタンスを決定済みか
   private readonly targetPos = new Vector3(0, 0, -HOME_POS_Z) // 現在の移動目標
   private reactionTimer = 0 // 相手打球後の反応遅延の残り時間
   private lastSeenHitBy: Side | null = null // 直近に観測した lastHitBy(打球検出用)
@@ -247,6 +258,8 @@ export class AIController implements Controller {
     this.targetPos.x = placeX
 
     this.mode = amServing ? 'returning' : 'intercept'
+    this.stance = 'baseline'
+    this.stanceDecided = false
     this.swingState = 'idle'
     this.swingTimer = 0
     this.swingLockTimer = 0
@@ -514,9 +527,10 @@ export class AIController implements Controller {
     if (hitBy === rival && this.lastSeenHitBy !== rival) {
       this.reactionTimer = this.profile.reactionDelay
       this.mode = 'intercept'
-      // 新しい相手打球 → 見送り判定をリセット(次の判定機会で再評価)
+      // 新しい相手打球 → 見送り判定とスタンス判断をリセット(次の判定機会で再評価)
       this.leaveDecided = false
       this.leaveCurrentBall = false
+      this.stanceDecided = false
     }
     // 自分が打った直後はホームへ戻るモードへ
     if (hitBy === this.side && this.lastSeenHitBy !== this.side) {
@@ -524,6 +538,7 @@ export class AIController implements Controller {
       this.reactionTimer = 0
       this.leaveDecided = false
       this.leaveCurrentBall = false
+      this.stanceDecided = false
     }
     this.lastSeenHitBy = hitBy
 
@@ -550,10 +565,10 @@ export class AIController implements Controller {
     } else if (this.mode === 'intercept') {
       const pred = ctx.predictLanding()
       if (pred && this.isOwnSide(pred.pos.z)) {
-        // 自分側に来る予測点へ。前後は予測点の少し後方に構える
+        // 自分側に来る予測点へ。スタンス(baseline/net)で前後の構え位置を変える。
+        this.decideStance(ctx, pred)
         goalX = pred.pos.x
-        // 着地点で待つが、深さは可動域内にクランプ
-        goalZ = pred.pos.z
+        goalZ = this.stanceGoalZ(pred.pos.z)
       } else if (pred && !this.isOwnSide(pred.pos.z)) {
         // 相手側に落ちる予測(=自分が打った後など)→ホームへ戻る
         this.mode = 'returning'
@@ -580,6 +595,63 @@ export class AIController implements Controller {
     // ヒステリシス: 小さな目標変化は無視してガクつきを抑える
     if (Math.abs(goalX - this.targetPos.x) > AI_HYSTERESIS) this.targetPos.x = goalX
     if (Math.abs(goalZ - this.targetPos.z) > AI_HYSTERESIS) this.targetPos.z = goalZ
+  }
+
+  // -------------------------------------------------------------------------
+  // 戦術スタンス判断(ベースラインで打ち合う / 前へ詰めてボレー)— GAME_DESIGN §7.1
+  // 入射球ごとに一度だけ、ペルソナの性格(netRushTendency)と局面(着地の深さ・球速)から
+  // スコアを合成し、AI_NET_APPROACH_THRESH を超えたら 'net'、超えなければ 'baseline'。
+  // -------------------------------------------------------------------------
+  private decideStance(ctx: ControlContext, pred: LandingPrediction): void {
+    if (this.stanceDecided) return
+    this.stanceDecided = true
+
+    // 性格: ネット型は基礎点が高い
+    const tendency = this.mods.netRushTendency
+
+    // 局面1: 短い球(着地がネット寄り)ほど詰めの好機。深い球は負に効く(詰めにくい)。
+    // shortFactor: 着地がネット際(depth 0)で +1、AI_SHORT_BALL_Z で 0、深いほど負(下限 -1)。
+    const landingDepth = Math.abs(pred.pos.z) // ネットからの距離
+    const shortFactor = clamp((AI_SHORT_BALL_Z - landingDepth) / AI_SHORT_BALL_Z, -1, 1)
+
+    // 局面2: 速球は前で捌きにくい。RETURN_PACE_THRESH 超過分を 0..1 に正規化して減点。
+    const pace = Math.hypot(ctx.ball.vel.x, ctx.ball.vel.y, ctx.ball.vel.z)
+    const paceFactor = clamp((pace - RETURN_PACE_THRESH) / 20, 0, 1)
+
+    const score = tendency + AI_NET_SHORT_W * shortFactor - AI_NET_PACE_W * paceFactor
+    this.stance = score > AI_NET_APPROACH_THRESH ? 'net' : 'baseline'
+
+    ctx.logDebug?.({
+      kind: 'note',
+      msg: `stance ${this.stance} (score=${round2(score)} tend=${round2(tendency)} short=${round2(shortFactor)} pace=${round2(paceFactor)})`,
+      data: {
+        stance: this.stance,
+        score: round2(score),
+        tendency: round2(tendency),
+        shortFactor: round2(shortFactor),
+        paceFactor: round2(paceFactor),
+        landingDepth: round2(landingDepth),
+      },
+    })
+  }
+
+  /**
+   * スタンスに応じた構え深さ(目標 z)を返す。
+   * - baseline: 着地点より AI_BASELINE_DROPBACK だけ深く(ネットから遠く)下がり、
+   *   バウンド後の上がり際〜頂点で打つ(低いバウンド位置での弱い返球を避ける)。
+   * - net: 着地点より AI_NET_ADVANCE だけ前(ネット寄り)に出て、バウンド前=空中で捉える。
+   *   ネット際の下限 AI_NET_MIN_Z より前には出ない。
+   * 返り値は最終的に decideTarget 側で可動域(MOVE_Z_MIN/MAX)へクランプされる。
+   */
+  private stanceGoalZ(landingZ: number): number {
+    const sign = sideSign(this.side) // opponent => -1
+    const depth = Math.abs(landingZ) // ネットからの距離
+    if (this.stance === 'net') {
+      const advanced = Math.max(AI_NET_MIN_Z, depth - AI_NET_ADVANCE)
+      return sign * advanced
+    }
+    // baseline
+    return sign * (depth + AI_BASELINE_DROPBACK)
   }
 
   // -------------------------------------------------------------------------
@@ -718,6 +790,7 @@ export class AIController implements Controller {
         hitX: round2(ctx.ball.pos.x),
         hitZ: round2(ctx.ball.pos.z),
         hitY: round2(ctx.ball.pos.y),
+        stance: this.stance,
         blunder: this.blunderThisPoint,
       },
     })

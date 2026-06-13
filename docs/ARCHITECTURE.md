@@ -298,6 +298,7 @@ ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ sp
 リーチ        : effReach = REACH * m.reachMul(打球可否ゲートと距離品質係数の両方で使う)
 スタミナ上限  : effStaminaMax = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
 利き手        : physique.handedness==='left' なら swingSide(fore/back)判定を左右反転
+戦術スタンス  : ai.ts のみ。m.netRushTendency(0..1、倍率でなく傾向値)が baseline/net 判断の基礎点(§11)
 
 スタミナ消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2-5.5):
   毎フレーム dStamina/dt = +STAMINA_REGEN_IDLE·m.staminaRegenMul·m.clutchRecoveryMul
@@ -413,6 +414,15 @@ interface ControlContext {
 GAME_DESIGN §7.2 の表が constants.ts にある)で挙動を決める。
 
 - **状態**: `returning`(ホームへ)/ `intercept`(予測点へ)/ `recover`。
+- **戦術スタンス**(GAME_DESIGN §7.1): `stance: 'baseline' | 'net'`。相手の新しい打球ごとに
+  一度だけ `decideStance` で決定(`stanceDecided` でガード、`updateReaction` の打者遷移で解除)。
+  スコア `= mods.netRushTendency + AI_NET_SHORT_W·shortFactor − AI_NET_PACE_W·paceFactor` を
+  `AI_NET_APPROACH_THRESH` と比較。`shortFactor` は着地のネットからの距離が `AI_SHORT_BALL_Z`
+  以内で正(短い球=好機)、深いほど負。`paceFactor` は `RETURN_PACE_THRESH` 超過球速の正規化値。
+  `intercept` の移動目標 z は `stanceGoalZ` で算出: **baseline** は着地点 |z| + `AI_BASELINE_DROPBACK`
+  だけ深く、**net** は着地点 |z| − `AI_NET_ADVANCE` だけ前(下限 `AI_NET_MIN_Z`)。最終的に可動域
+  (`MOVE_Z_MIN/MAX`)へクランプ。`netRushTendency` は `personaModifiers()` がペルソナ能力値
+  (finesse/serve/speed 高で前、stamina/spin 高で後ろ)から導出する(§6.5)。
 - **アウトの見送り**(GAME_DESIGN §7.1): 相手の新しい打球ごとに一度だけ判定。
   `predictLanding()` の着地が自陣コート外なら、はみ出し距離 `outDist` に応じて
   `leaveOutEdgeProb`(ライン際)〜`leaveOutClearProb`(`AI_LEAVE_CLEAR_MARGIN` 超)を

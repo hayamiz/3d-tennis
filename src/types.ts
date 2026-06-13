@@ -105,6 +105,13 @@ export interface PersonaModifiers {
   clutchRecoveryMul: number
   /** プレッシャー時の消費倍率(高 mental は p が高いほど消費減、低 mental は増) */
   pressureDrainMul: number
+  /**
+   * ネットへ詰める傾向 0..1(倍率ではなく傾向値。docs/GAME_DESIGN.md §7.1)。
+   * AI の戦術スタンス判断(ベースラインで打ち合う/前へ詰めてボレー)で使う。
+   * サーブ&ボレー/オールコート型は高く、グラインダー/カウンター型は低い。
+   * 人間プレイヤーは参照しない(AIController のみが使用)。
+   */
+  netRushTendency: number
 }
 
 export type GamePhase = 'menu' | 'serve' | 'rally' | 'pointOver' | 'matchOver'

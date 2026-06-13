@@ -280,7 +280,7 @@ export function shotStaminaCost(type: ShotType, charge: number, isSmash: boolean
 export const STAMINA_GAUGE_GREEN = 0.6 // これ以上は緑(余裕)
 export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意) = LOW_THRESHOLD/MAX
 export const STAMINA_SWEAT_START = 0.5 // この割合未満で発汗開始(早めに出して気づきやすく)
-export const STAMINA_SWEAT_MAX_RATE = 26 // /s(pct→0 で最大放出レート。多めに出して分かりやすく)
+export const STAMINA_SWEAT_MAX_RATE = 20 // /s(pct→0 での放出レート。50%→0% を線形に増加)
 
 // ---------------------------------------------------------------------------
 // モメンタム(勢い)とプレッシャー時の品質変動(IMPROVEMENTS §4 高 / GAME_DESIGN §6.2)
@@ -334,6 +334,27 @@ export const AI_LEAVE_CLEAR_MARGIN = 0.6
 
 /** AI のホームポジション(ベースライン少し後ろ、z は opponent 側で符号反転して使う) */
 export const HOME_POS_Z = COURT_HALF_LENGTH + 1.0
+
+// ---------------------------------------------------------------------------
+// AI 戦術スタンス(ベースライン / ネット)— GAME_DESIGN §7.1 / ARCHITECTURE §11
+// 入射球ごとに「後ろで打ち合う(baseline)」か「前へ詰めてボレー(net)」かを判断する。
+// スコア = netRushTendency(ペルソナ性格) + 短い球ボーナス − 速球ペナルティ。
+// これが AI_NET_APPROACH_THRESH を超えたら net、超えなければ baseline。
+// ---------------------------------------------------------------------------
+/** ネットへ詰めると判断する合成スコアの閾値 */
+export const AI_NET_APPROACH_THRESH = 0.62
+/** 短い球(着地がネット寄り)ほど詰めの好機。AI_SHORT_BALL_Z 以内で最大の加点重み */
+export const AI_NET_SHORT_W = 0.5
+/** 着地のネットからの距離がこれ以下なら「短い球」(好機)。超では負に効く(深い球は詰めにくい) */
+export const AI_SHORT_BALL_Z = SERVICE_LINE_Z + 1.0 // 7.4m
+/** 速球は詰めにくい。RETURN_PACE_THRESH 超過分に応じて減点する重み */
+export const AI_NET_PACE_W = 0.5
+/** ベースライン時、着地点より深く(ネットから遠く)下がって構える距離(m)。上がり際で打つ */
+export const AI_BASELINE_DROPBACK = 1.6
+/** ネット時、着地点より前(ネット寄り)に出る距離(m)。空中/バウンド前に捉える */
+export const AI_NET_ADVANCE = 2.2
+/** ネットへ詰めても、ネットからこの距離より前には出ない(ネット際の下限) */
+export const AI_NET_MIN_Z = 1.4
 
 // ---------------------------------------------------------------------------
 // ゲームフロー
@@ -452,7 +473,20 @@ export function personaModifiers(r: PersonaRatings, mental: number): PersonaModi
     // 精神力(隠し mental 由来。IMPROVEMENTS §5.5)
     clutchRecoveryMul: 0.85 + 0.07 * mental, // m5→1.20 / m1→0.92
     pressureDrainMul: 1.3 - 0.1 * mental, // m5→0.80 / m1→1.20
+    // ネットへ詰める傾向(AI 戦術スタンス。GAME_DESIGN §7.1)。
+    // タッチ(finesse)・サーブ・スピードが高いほど前へ、スタミナ・スピンが高いほど後ろで粘る。
+    // r=3 中心で 0.5 付近、最強級のネット型で ~0.9、純グラインダーで ~0。
+    // 例: サンブラント≈0.90 / フェデルン≈0.86 / ニシゴオリ≈0.86 / アガチ≈0.28 / ジョコヴィン≈0.10 / ナダウ≈0.00
+    netRushTendency: clamp01(
+      0.5 + 0.12 * (r.finesse - 3) + 0.1 * (r.serve - 3) + 0.06 * (r.speed - 3)
+        - 0.1 * (r.stamina - 3) - 0.08 * (r.spin - 3),
+    ),
   }
+}
+
+/** 0..1 にクランプ(personaModifiers 内部用) */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x
 }
 
 /** 中立倍率(全 1.0)。ペルソナ未指定(テスト・ダミー)時のフォールバック */
@@ -461,6 +495,8 @@ export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
   aimNoiseMul: 1, netMarginMul: 1, returnSolidMul: 1, moveSpeedMul: 1,
   reachMul: 1, staminaMaxMul: 1, staminaDrainMul: 1, staminaRegenMul: 1,
   touchNoiseMul: 1, returnTouchMul: 1, clutchRecoveryMul: 1, pressureDrainMul: 1,
+  // 中立は控えめなベースライナー寄り(主に静止しているのは着地点付近)
+  netRushTendency: 0.3,
 }
 
 // ---------------------------------------------------------------------------

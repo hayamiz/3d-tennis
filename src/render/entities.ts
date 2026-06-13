@@ -1027,9 +1027,10 @@ export class CharacterEntity {
     // pct が満タン(1.0)か、発汗閾値以上ならここで終了(放出なし)
     if (pct >= STAMINA_SWEAT_START || pct >= 1.0) return
 
-    // 放出レートを計算: pct→0 で STAMINA_SWEAT_MAX_RATE、pct=SWEAT_START で 0
+    // 放出レートを計算: pct=SWEAT_START(50%)で 0、pct→0 で STAMINA_SWEAT_MAX_RATE。
+    // 線形に増やす(以前は二乗で終盤に偏り「ゼロ近くで急増」していたため)。
     const t = 1.0 - pct / STAMINA_SWEAT_START // 0(閾値直前)→1(枯渇)
-    const rate = STAMINA_SWEAT_MAX_RATE * t * t // 二乗でゆっくり増やす
+    const rate = STAMINA_SWEAT_MAX_RATE * t // 線形(25%で約10/s、0%で20/s)
 
     this.sweatTimer -= dt
     if (this.sweatTimer > 0) return
