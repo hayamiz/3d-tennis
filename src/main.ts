@@ -28,6 +28,9 @@ import {
   BASE_HEIGHT_M,
   COURT_HALF_LENGTH,
   COURT_HALF_WIDTH,
+  MOMENTUM_FULL_STREAK,
+  NET_POINT_Z,
+  OPEN_COURT_MIN_OFFSET,
   PHYS_DT,
   PLAYER_PERSONAS,
   personaModifiers,
@@ -115,7 +118,48 @@ function newStats(): MatchStats {
     winners: { player: 0, opponent: 0 },
     errors: { player: 0, opponent: 0 },
     doubleFaults: { player: 0, opponent: 0 },
+    pointsPlayed: 0,
+    totalShots: 0,
+    firstServeIn: { player: 0, opponent: 0 },
+    firstServeTotal: { player: 0, opponent: 0 },
+    netPointsWon: { player: 0, opponent: 0 },
+    netPointsPlayed: { player: 0, opponent: 0 },
+    runDistance: { player: 0, opponent: 0 },
   }
+}
+
+// ---------------------------------------------------------------------------
+// モメンタム(勢い)+ ポイント内集計(IMPROVEMENTS §4 高)
+// ---------------------------------------------------------------------------
+let streak: { player: number; opponent: number } = { player: 0, opponent: 0 }
+/** このポイントの集計(ポイント終了時に stats へ反映) */
+let pointShots = 0
+let pointNetTouch: { player: boolean; opponent: boolean } = { player: false, opponent: false }
+let prevPos: { player: Vector3; opponent: Vector3 } | null = null
+
+/** あるサイドのモメンタム −1..+1(自分の連勝 − 相手の連勝、MOMENTUM_FULL_STREAK で正規化) */
+function momentumOf(side: Side): number {
+  const mine = Math.min(streak[side] / MOMENTUM_FULL_STREAK, 1)
+  const rival = Math.min(streak[otherSide(side)] / MOMENTUM_FULL_STREAK, 1)
+  return mine - rival
+}
+
+/**
+ * オープンコートの可視化対象を算出(IMPROVEMENTS §4 高)。
+ * プレイヤーが打つ番(相手が最後に打った)で、相手(AI)がセンターから外れているとき、
+ * 相手コートの空いた側(AI の x と反対側)を返す。配球が報われる手応えの可視化。
+ */
+function computeOpenCourt(): { x: number; z: number; strength: number } | null {
+  if (phase !== 'rally' || !ballSim.state.inPlay) return null
+  if (ballSim.state.lastHitBy !== 'opponent') return null // プレイヤーが打つ局面のみ
+  const aiX = aiCtrl.view.pos.x
+  const off = Math.abs(aiX) - OPEN_COURT_MIN_OFFSET
+  if (off <= 0) return null
+  const strength = Math.min(off / (COURT_HALF_WIDTH - OPEN_COURT_MIN_OFFSET), 1)
+  // 相手コート(z<0)の、AI の反対側のコーナー寄り
+  const openX = -Math.sign(aiX) * COURT_HALF_WIDTH * 0.62
+  const openZ = -(COURT_HALF_LENGTH * 0.55)
+  return { x: openX, z: openZ, strength }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +259,9 @@ function makeContext(self: Side): ControlContext {
     get pressure() {
       return currentPressure
     },
+    get momentum() {
+      return momentumOf(self)
+    },
     predictLanding: () => ballSim.predictLanding(),
     requestShot: (req: ShotRequest) => handleShot(req),
     requestServe: (power, aimX, serveType) => handleServe(self, power, aimX, serveType),
@@ -260,6 +307,9 @@ const ctxOpponent = makeContext('opponent')
 // ---------------------------------------------------------------------------
 function handleShot(req: ShotRequest): void {
   if (phase !== 'rally' || !ballSim.state.inPlay) return
+  // 集計: 打球数 + ネットポイント(前衛での打球)検出
+  pointShots++
+  if (Math.abs(req.hitPos.z) < NET_POINT_Z) pointNetTouch[req.hitter] = true
   const sol = solveShot(req)
   dbg(`shot ${req.hitter} ${req.type} q=${req.quality.toFixed(2)} hit=${fmt(req.hitPos)} target=${fmt(req.target)}`)
   ballSim.launch(req.hitPos.clone(), sol.vel, sol.spin, req.hitter)
@@ -317,6 +367,12 @@ function handleServe(
     predictedIn: landIn,
   })
   dbg(`serve ${server} ${serveType} power=${power.toFixed(2)} aimX=${aimX}`)
+  // 集計: 1stサーブ確率(打った数と入った数)+ サーブも1打球
+  if (serveNumber === 1) {
+    stats.firstServeTotal[server]++
+    if (landIn) stats.firstServeIn[server]++
+  }
+  pointShots++
   sfx.play('serve', { intensity: power })
   renderer.sceneApi.spawnHitFx(hitPos.clone())
   phase = 'rally'
@@ -367,6 +423,18 @@ function applyVerdict(v: RallyVerdict): void {
     stats.doubleFaults[loser]++
   }
 
+  // スタッツ集計(ポイント確定)+ モメンタム更新
+  stats.pointsPlayed++
+  stats.totalShots += pointShots
+  for (const s of ['player', 'opponent'] as Side[]) {
+    if (pointNetTouch[s]) {
+      stats.netPointsPlayed[s]++
+      if (verdict.winner === s) stats.netPointsWon[s]++
+    }
+  }
+  streak[verdict.winner]++
+  streak[otherSide(verdict.winner)] = 0
+
   score.addPoint(verdict.winner)
   pointsInGame++
   serveNumber = 1
@@ -413,6 +481,10 @@ function startNextPoint(): void {
   const server = sv.server
   const right = serveFromRight()
   resetPointLog() // 新しいポイントの判断ログを開始(スコアはまだ更新前)
+  // ポイント内集計のリセット
+  pointShots = 0
+  pointNetTouch = { player: false, opponent: false }
+  prevPos = null
   playerCtrl.resetForPoint(server, right)
   aiCtrl.resetForPoint(server, right)
   ballSim.state.inPlay = false
@@ -444,6 +516,7 @@ function startMatch(cfg: MatchConfig): void {
   pointsInGame = 0
   banner = null
   paused = false
+  streak = { player: 0, opponent: 0 }
   ui.setPaused(false)
   // スコアボードにマッチ情報(ペルソナ名・難易度)を表示
   ui.setMatchInfo({
@@ -507,6 +580,20 @@ function physicsStep(): void {
   playerCtrl.update(PHYS_DT, ctxPlayer)
   aiCtrl.update(PHYS_DT, ctxOpponent)
 
+  // 走らせ距離の集計(ラリー中の各プレイヤーの移動量を加算)
+  if (phase === 'rally') {
+    const pp = playerCtrl.view.pos
+    const op = aiCtrl.view.pos
+    if (prevPos) {
+      stats.runDistance.player += Math.hypot(pp.x - prevPos.player.x, pp.z - prevPos.player.z)
+      stats.runDistance.opponent += Math.hypot(op.x - prevPos.opponent.x, op.z - prevPos.opponent.z)
+      prevPos.player.copy(pp)
+      prevPos.opponent.copy(op)
+    } else {
+      prevPos = { player: pp.clone(), opponent: op.clone() }
+    }
+  }
+
   if (phase === 'serve') {
     // サーブ待機中はボールをサーバーの手元に保持(描画用)
     const server = score.view.server
@@ -566,6 +653,7 @@ function frame(now: number): void {
     player: playerCtrl ? playerCtrl.view : dummyView('player'),
     opponent: aiCtrl ? aiCtrl.view : dummyView('opponent'),
     landing: phase === 'rally' && ballSim.state.inPlay ? ballSim.predictLanding() : null,
+    openCourt: computeOpenCourt(),
   })
 
   if (phase !== 'menu') {
@@ -577,9 +665,10 @@ function frame(now: number): void {
       head.y += 2.0
       serveLabelScreen = renderer.worldToScreen(head)
     }
-    // スタミナ円形ゲージ用: 両キャラ頭上のスクリーン座標(IMPROVEMENTS §5.8)
+    // スタミナ円形ゲージ用: プレイヤーの右横・胸の高さにオフセット(頭上だと
+    // サーブラベルやボール視線と干渉するため。IMPROVEMENTS §5.1)。相手ゲージは非表示。
     const ov = aiCtrl.view
-    const playerHead = pv.pos.clone(); playerHead.y += 2.3
+    const playerHead = pv.pos.clone(); playerHead.x += 0.6; playerHead.y += 1.4
     const opponentHead = ov.pos.clone(); opponentHead.y += 2.3
     const hud: HudView = {
       score: score.view,
@@ -595,6 +684,7 @@ function frame(now: number): void {
       opponentStaminaPct: ov.staminaPct,
       playerStaminaScreen: renderer.worldToScreen(playerHead),
       opponentStaminaScreen: renderer.worldToScreen(opponentHead),
+      playerMomentum: momentumOf('player'),
     }
     ui.updateHud(hud)
   }

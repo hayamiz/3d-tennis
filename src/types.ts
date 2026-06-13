@@ -246,6 +246,11 @@ export interface ControlContext {
   logDebug?: (e: AIDebugEvent) => void
   /** 現在のプレッシャー 0..1(ブレーク/ゲーム/マッチポイント等。docs/GAME_DESIGN.md §6) */
   pressure: number
+  /**
+   * このサイドの勢い(モメンタム)−1..+1。連続得点で +、連続失点で −
+   * (docs/GAME_DESIGN.md §6.2)。波に乗ると品質が微増、崩れると微減。
+   */
+  momentum: number
 }
 
 /**
@@ -361,6 +366,19 @@ export interface MatchStats {
   winners: { player: number; opponent: number }
   errors: { player: number; opponent: number }
   doubleFaults: { player: number; opponent: number }
+  // 拡張スタッツ(IMPROVEMENTS §4 高)
+  /** 完了したポイント数(平均ラリー長の分母) */
+  pointsPlayed: number
+  /** 全ポイントの総打球数(サーブ含む)。平均ラリー長 = totalShots / pointsPlayed */
+  totalShots: number
+  /** 1stサーブが入った数 / 打った数(1stサーブ確率) */
+  firstServeIn: { player: number; opponent: number }
+  firstServeTotal: { player: number; opponent: number }
+  /** ネットポイント(前衛で打球したポイント)の勝ち数 / 数 */
+  netPointsWon: { player: number; opponent: number }
+  netPointsPlayed: { player: number; opponent: number }
+  /** 総移動距離(m)。相手を走らせた量の目安 */
+  runDistance: { player: number; opponent: number }
 }
 
 export interface MatchResult {
@@ -418,6 +436,12 @@ export interface WorldView {
   opponent: PlayerView
   /** 飛行中ボールの着地予測(視認性マーカー描画用)。非ラリー時は null */
   landing: LandingPrediction | null
+  /**
+   * オープンコート(相手を走らせて空いた領域)のワールド位置と開き具合。
+   * ラリー中に相手が定位置から外れているとき main が算出する。null なら非表示。
+   * 描画側はこの位置に光る床ハイライトを出し「ここが空いている」を可視化する。
+   */
+  openCourt: { x: number; z: number; strength: number } | null
 }
 
 /** main からエフェクトを発火するための API(GameRenderer が実装) */
@@ -445,6 +469,8 @@ export interface HudView {
   /** スタミナ正規化残量 0..1(円形ゲージの塗り・色用) */
   playerStaminaPct: number
   opponentStaminaPct: number
+  /** プレイヤーのモメンタム −1..+1(勢いインジケータ用)。+ で連続得点中 */
+  playerMomentum: number
   /** 各キャラ頭上のスクリーン座標(円形ゲージの追従用。投影不可なら null) */
   playerStaminaScreen: { x: number; y: number } | null
   opponentStaminaScreen: { x: number; y: number } | null

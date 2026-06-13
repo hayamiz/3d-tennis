@@ -34,9 +34,11 @@ import {
   HIGH_TOPSPIN_ANGLE_BONUS,
   HOME_POS_Z,
   MOVE_ACCEL,
+  MOMENTUM_QUALITY_K,
   MOVE_X_LIMIT,
   MOVE_Z_MAX,
   MOVE_Z_MIN,
+  PRESSURE_CHOKE_K,
   QUALITY_MIN,
   REACH,
   REACH_HEIGHT,
@@ -702,7 +704,7 @@ export class AIController implements Controller {
     const receding = relX * ctx.ball.vel.x + relZ * ctx.ball.vel.z > 0
     if (hdist > SWEET_DIST && !receding) return
 
-    const quality = this.computeQuality(hdist)
+    const quality = this.computeQuality(hdist, ctx)
     const req = this.chooseShot(ctx, quality)
     ctx.logDebug?.({
       kind: 'shot',
@@ -751,8 +753,8 @@ export class AIController implements Controller {
     this.mode = 'returning'
   }
 
-  /** 品質計算(GAME_DESIGN §4.2)。プレイヤーと同一式 + 凡ミス */
-  private computeQuality(hdist: number): number {
+  /** 品質計算(GAME_DESIGN §4.2)。プレイヤーと同一式 + モメンタム/プレッシャー + 凡ミス */
+  private computeQuality(hdist: number, ctx: ControlContext): number {
     // 距離係数: SWEET_DIST 以内で 1.0、effReach で QUALITY_MIN へ線形
     // (REACH 上限はペルソナ補正済みの effReach を使う)
     const reach = this.effReach
@@ -779,6 +781,12 @@ export class AIController implements Controller {
 
     let q = distFactor * staminaFactor
     if (this.sprinting) q -= SPRINT_SHOT_PENALTY
+    // モメンタム/プレッシャー(既存要素 → momentum → pressure → クランプ)。
+    // q *= 1 + MOMENTUM_QUALITY_K·momentum(連続得点 + で微増、連続失点 − で微減)。
+    // q *= 1 − PRESSURE_CHOKE_K·(pressureDrainMul − 1)·pressure
+    // (低 mental は重圧で choke、高 mental は clutch。中立 mental では影響なし)。
+    q *= 1 + MOMENTUM_QUALITY_K * ctx.momentum
+    q *= 1 - PRESSURE_CHOKE_K * (this.mods.pressureDrainMul - 1) * ctx.pressure
     q = clamp(q, QUALITY_MIN, 1.0)
 
     // 凡ミス: このポイントで抽選済みなら大幅低下(0.4 倍程度)

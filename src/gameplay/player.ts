@@ -38,6 +38,8 @@ import {
   SHOT_PARAMS,
   SMASH_MIN_HEIGHT,
   SMASH_MAX_DEPTH,
+  MOMENTUM_QUALITY_K,
+  PRESSURE_CHOKE_K,
   shotStaminaCost,
   AIM_OFFSET_X,
   AIM_OFFSET_Z,
@@ -525,13 +527,13 @@ export class PlayerController implements Controller {
     }
 
     // 品質計算 (GAME_DESIGN §4.2)
+    // 既存要素(距離・スタミナ・スプリント)→ モメンタム/プレッシャー → クランプ の順。
     const distFactor = this.calcDistFactor(hDist)
     const staminaFactor = this.calcStaminaFactor()
     const sprintPenalty = isSprinting ? SPRINT_SHOT_PENALTY : 0
-    const quality = Math.max(
-      QUALITY_MIN,
-      Math.min(1.0, distFactor * staminaFactor - sprintPenalty),
-    )
+    let q = distFactor * staminaFactor - sprintPenalty
+    q = this.applyMomentumPressure(q, ctx)
+    const quality = Math.max(QUALITY_MIN, Math.min(1.0, q))
 
     // ターゲット決定 (GAME_DESIGN §4.3)。自動打球の瞬間の移動キー状態と打点高さを使う
     const target = this.calcTarget(shotType, inp, ball.pos.y)
@@ -651,6 +653,21 @@ export class PlayerController implements Controller {
     // SWEET_DIST..effReach を 1.0..QUALITY_MIN に線形補間
     const t = (hDist - SWEET_DIST) / (reach - SWEET_DIST)
     return 1.0 - t * (1.0 - QUALITY_MIN)
+  }
+
+  /**
+   * モメンタム(勢い)とプレッシャー時の品質変動を q に乗算する
+   * (GAME_DESIGN §6.2 / IMPROVEMENTS §4 高)。クランプは呼び出し側で行う。
+   * - q *= 1 + MOMENTUM_QUALITY_K·momentum(連続得点 + で微増、連続失点 − で微減)
+   * - q *= 1 − PRESSURE_CHOKE_K·(pressureDrainMul − 1)·pressure
+   *   (低 mental は pressureDrainMul>1 → 重圧で品質低下=choke、
+   *    高 mental は <1 → 重圧で品質微上昇=clutch)
+   * momentum=0 かつ pressure=0(または中立 mental で pressureDrainMul=1)では従来と完全一致。
+   */
+  private applyMomentumPressure(q: number, ctx: ControlContext): number {
+    q *= 1 + MOMENTUM_QUALITY_K * ctx.momentum
+    q *= 1 - PRESSURE_CHOKE_K * (this.mods.pressureDrainMul - 1) * ctx.pressure
+    return q
   }
 
   /** スタミナ係数: 30% 以上で 1.0、0% で STAMINA_QUALITY_FLOOR へ線形減衰 */

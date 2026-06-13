@@ -563,17 +563,24 @@ canvas#game-canvas {
  */
 .stamina-ring {
   position: absolute;
-  /* アンカー点(頭上スクリーン座標)に対して水平中央・頭上へ浮かせる */
-  transform: translate(-50%, -115%);
+  /* アンカー点(キャラ右横のスクリーン座標)に対して中央寄せ */
+  transform: translate(-50%, -50%);
   pointer-events: none;
-  /* SVG と ラベルを重ねるために relative コンテキスト */
   display: block;
+  /* 控えめに(プレイの集中を妨げない。色とエフェクトで状況は伝わる) */
+  opacity: 0.55;
 }
 
-/* プレイヤー(1P 青枠: 大きめ・明るめ) */
+/* 数字ラベルは出さない(リング弧のみで「ちらっと見て分かる」表示にする)。
+   JS がインライン display:flex を付けるため !important で確実に隠す。 */
+.stamina-ring-label {
+  display: none !important;
+}
+
+/* プレイヤー(1P 青枠) */
 .stamina-ring-player {
-  /* サイズは JS 側で設定(radius=22 → size=54px) */
-  filter: drop-shadow(0 0 4px rgba(68, 136, 255, 0.5));
+  /* サイズは JS 側で設定 */
+  filter: drop-shadow(0 0 3px rgba(68, 136, 255, 0.4));
 }
 
 /* 相手(2P 赤枠: 小さめ・控えめ) */
@@ -781,6 +788,14 @@ canvas#game-canvas {
 .stats-table td.highlight {
   color: #fff;
   font-weight: 700;
+}
+
+/* 両者共通の1値(平均ラリー長等)を colspan=2 のセルで中央表示する */
+.stats-table td.stat-center-val {
+  text-align: center;
+  color: #d8e8f0;
+  font-size: clamp(0.88rem, 1.4vw, 1rem);
+  font-style: italic;
 }
 
 /* --- ボタン群 --- */
@@ -1087,6 +1102,45 @@ canvas#game-canvas {
   pointer-events: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ===========================================================================
+ * モメンタムインジケータ(スコアボード内 / HUD)— IMPROVEMENTS §4 高
+ * momentum > 0(連続得点中)のときのみ表示。
+ * ========================================================================= */
+
+/* スコアボード内の底部に配置 */
+.hud-momentum {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  margin-top: 0.3rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 140, 0, 0.10);
+  border: 1px solid rgba(255, 140, 0, 0.20);
+  /* --momentum: 0..1 で外側グロー強度が変わる */
+  box-shadow: 0 0 calc(var(--momentum, 0) * 10px) rgba(255, 140, 0, calc(var(--momentum, 0) * 0.5));
+  transition: box-shadow 0.4s ease;
+}
+
+/* ラベル("🔥") は隠す — アイコン群だけで表現するため */
+.momentum-label {
+  display: none;
+}
+
+/* 各炎アイコン: --s(0..1) で透明度・スケールが変わる */
+.momentum-icon {
+  display: inline-block;
+  font-size: 0.95rem;
+  line-height: 1;
+  /* 弱いアイコンほど薄く・小さく */
+  opacity: calc(0.3 + var(--s, 1) * 0.7);
+  transform: scale(calc(0.7 + var(--s, 1) * 0.35));
+  /* filter でグロー追加: 強いほど強くかかる */
+  filter: drop-shadow(0 0 calc(var(--s, 1) * 6px) rgba(255, 160, 0, 0.8));
+  transition: opacity 0.3s ease, transform 0.3s ease, filter 0.3s ease;
 }
 
 /* ===========================================================================

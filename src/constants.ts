@@ -243,15 +243,16 @@ export const MOVE_Z_MAX = 15.5
 
 // スタミナ
 export const STAMINA_MAX = 100
-export const STAMINA_POINT_RECOVERY = 40 // ポイント間
+export const STAMINA_POINT_RECOVERY = 32 // ポイント間(やや控えめ=長丁場で蓄積疲労)
 export const STAMINA_LOW_THRESHOLD = 30 // これ未満で品質低下開始
 export const STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
 
 // 連続消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2)
 // dStamina/dt = +REGEN_IDLE − MOVE_DRAIN_K·speed − SPRINT_EXTRA·[sprinting]
 // (移動・スプリント消費に mods.staminaDrainMul、基礎回復に mods.staminaRegenMul を乗算)
-export const STAMINA_REGEN_IDLE = 7 // /s 常時の基礎回復(速度0で全量)
-export const STAMINA_MOVE_DRAIN_K = 1.4 // /s あたり(m/s)。drain = K·speed
+// 通常ラリーでも徐々に減るよう、基礎回復を抑え移動消費を上げた(100 張り付き対策)。
+export const STAMINA_REGEN_IDLE = 5 // /s 常時の基礎回復(速度0で全量)
+export const STAMINA_MOVE_DRAIN_K = 1.55 // /s あたり(m/s)。drain = K·speed
 export const STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
 
 // 強いショットの打球時消費(インパクト時に1回。IMPROVEMENTS §5.3)
@@ -277,6 +278,27 @@ export const STAMINA_GAUGE_GREEN = 0.6 // これ以上は緑(余裕)
 export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意) = LOW_THRESHOLD/MAX
 export const STAMINA_SWEAT_START = 0.45 // この割合未満で発汗開始
 export const STAMINA_SWEAT_MAX_RATE = 14 // /s(pct→0 で最大放出レート)
+
+// ---------------------------------------------------------------------------
+// モメンタム(勢い)とプレッシャー時の品質変動(IMPROVEMENTS §4 高 / GAME_DESIGN §6.2)
+// ---------------------------------------------------------------------------
+/** 連続得点が何点で勢い満タン(momentum=±1)になるか */
+export const MOMENTUM_FULL_STREAK = 3
+/** momentum=±1 での品質倍率の振れ幅(波に乗ると +、崩れると −) */
+export const MOMENTUM_QUALITY_K = 0.06
+/**
+ * プレッシャー時の品質変動係数。低 mental(pressureDrainMul>1)は重圧で品質が落ち(choke)、
+ * 高 mental(<1)は逆に微上昇(clutch)。q *= 1 − PRESSURE_CHOKE_K·(pressureDrainMul−1)·pressure
+ */
+export const PRESSURE_CHOKE_K = 0.5
+
+// ---------------------------------------------------------------------------
+// オープンコート可視化(IMPROVEMENTS §4 高)
+// ---------------------------------------------------------------------------
+/** 相手がこの距離(m)以上センターから外れたらオープンコートを表示し始める */
+export const OPEN_COURT_MIN_OFFSET = 1.2
+/** 前衛(ネットポイント)判定の z 閾値: |z| < これ で前衛とみなす(= サービスライン) */
+export const NET_POINT_Z = SERVICE_LINE_Z
 
 // ---------------------------------------------------------------------------
 // AI

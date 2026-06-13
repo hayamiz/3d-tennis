@@ -12,6 +12,150 @@ import { BallEntity, CharacterEntity } from './entities'
 import { CameraController } from './camera'
 import { EffectSystem } from './effects'
 
+// ---------------------------------------------------------------------------
+// オープンコート床ハイライト(IMPROVEMENTS §4 高)
+// WorldView.openCourt が non-null のとき、指定ワールド座標に「光る床グロー」を表示。
+// リング(RingGeometry) + ソフトグロー(Sprite) の2層構成で脈動させる。
+// メッシュは1つずつ生成し使い回す(毎フレーム生成しない)。
+// ---------------------------------------------------------------------------
+
+/** コート面 y 座標(ライン面より僅かに上で z ファイティング防止) */
+const OC_Y = 0.022
+
+/** リングの基準外径(m)。strength=1 のときこのサイズになる */
+const OC_RING_OUTER = 1.6
+/** リングの幅(内径 = 外径 × この係数) */
+const OC_RING_INNER_RATIO = 0.68
+
+/** グロー Sprite の基準サイズ(m)。strength=1 のとき */
+const OC_GLOW_SIZE = 3.2
+
+/** ハイライトの基色(黄緑〜シアン系の「狙い目」を示す色) */
+const OC_COLOR_HEX = 0x40ffcc
+
+/** 脈動の角速度(rad/s)。ゆったりとした周期 */
+const OC_PULSE_SPEED = 3.5
+
+/**
+ * オープンコートの床ハイライトエンティティ。
+ * GameRenderer のコンストラクタで1度だけ生成し、render() ごとに更新する。
+ */
+class OpenCourtHighlight {
+  /** 外側リングメッシュ */
+  private readonly ring: THREE.Mesh
+  /** 内側ソフトグロー(Sprite) */
+  private readonly glow: THREE.Sprite
+  /** 脈動の位相(rad) */
+  private pulsePhase = 0
+
+  constructor(scene: THREE.Scene) {
+    // ----- リング -----
+    // RingGeometry(内径, 外径, セグメント数)。内径/外径は後でスケールで調整するため
+    // ここでは正規化サイズ(内径比を反映)で生成する。
+    const innerR = OC_RING_OUTER * OC_RING_INNER_RATIO
+    const ringGeo = new THREE.RingGeometry(innerR, OC_RING_OUTER, 40)
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: OC_COLOR_HEX,
+      transparent: true,
+      opacity: 0.0,  // 初期は非表示; update() で設定
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+    this.ring = new THREE.Mesh(ringGeo, ringMat)
+    this.ring.rotation.x = -Math.PI / 2
+    this.ring.position.y = OC_Y
+    this.ring.visible = false
+    scene.add(this.ring)
+
+    // ----- ソフトグロー Sprite -----
+    const glowTex = makeOpenCourtGlowTexture()
+    const glowMat = new THREE.SpriteMaterial({
+      map: glowTex,
+      color: OC_COLOR_HEX,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.0,  // 初期は非表示; update() で設定
+    })
+    this.glow = new THREE.Sprite(glowMat)
+    this.glow.scale.setScalar(OC_GLOW_SIZE)
+    this.glow.visible = false
+    scene.add(this.glow)
+  }
+
+  /**
+   * 毎フレーム呼ぶ。openCourt が null なら非表示、non-null なら位置・強度・脈動を更新。
+   * @param dt フレーム時間(秒)
+   * @param openCourt WorldView.openCourt の値
+   */
+  update(dt: number, openCourt: { x: number; z: number; strength: number } | null): void {
+    if (!openCourt) {
+      // null: 非表示にして早期リターン
+      this.ring.visible = false
+      this.glow.visible = false
+      return
+    }
+
+    const { x, z, strength } = openCourt
+    // strength は 0..1。0 に近いほど目立たなく、1 で最大
+    const s = Math.max(0, Math.min(1, strength))
+
+    // 脈動: sin 波で不透明度とスケールを緩く上下
+    this.pulsePhase += dt * OC_PULSE_SPEED
+    const pulse = 0.5 + 0.5 * Math.sin(this.pulsePhase) // 0..1
+
+    // 不透明度: strength × 脈動(リングは強め、グローは柔らかく)
+    const ringOpacity = s * (0.55 + 0.35 * pulse)
+    const glowOpacity = s * (0.18 + 0.12 * pulse)
+
+    // スケール: strength に応じてリングを拡縮(大きく空くほど目立つ)
+    const scaleMul = 0.6 + 0.4 * s + 0.06 * pulse
+
+    // ----- リング更新 -----
+    this.ring.position.set(x, OC_Y, z)
+    this.ring.scale.setScalar(scaleMul)
+    ;(this.ring.material as THREE.MeshBasicMaterial).opacity = ringOpacity
+    this.ring.visible = true
+
+    // ----- グロー更新 -----
+    // Sprite は y を OC_Y に合わせて浮かせる(Sprite はビルボードなので y も指定)
+    this.glow.position.set(x, OC_Y + 0.01, z)
+    this.glow.scale.setScalar(OC_GLOW_SIZE * scaleMul)
+    ;(this.glow.material as THREE.SpriteMaterial).opacity = glowOpacity
+    this.glow.visible = true
+  }
+
+  /** シーンから除去 */
+  dispose(scene: THREE.Scene): void {
+    scene.remove(this.ring)
+    scene.remove(this.glow)
+  }
+}
+
+/** オープンコートグロー用の放射グラデーションテクスチャを生成する(1度だけ呼ぶ) */
+function makeOpenCourtGlowTexture(): THREE.Texture {
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width  = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  // 中心から外へ向かって白→透明の放射グラデーション
+  const grad = ctx.createRadialGradient(
+    size / 2, size / 2, 0,
+    size / 2, size / 2, size / 2,
+  )
+  grad.addColorStop(0.0,  'rgba(255,255,255,0.90)')
+  grad.addColorStop(0.30, 'rgba(255,255,255,0.45)')
+  grad.addColorStop(0.65, 'rgba(255,255,255,0.12)')
+  grad.addColorStop(1.0,  'rgba(255,255,255,0.00)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, size, size)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.needsUpdate = true
+  return tex
+}
+
 /** setMatchup に渡すペルソナの見た目情報 */
 export interface PersonaVisual {
   physique: PersonaPhysique
@@ -33,6 +177,9 @@ export class GameRenderer {
 
   // エフェクトシステム(SceneApi を実装)
   private readonly effects: EffectSystem
+
+  // オープンコート床ハイライト(IMPROVEMENTS §4 高)
+  private readonly openCourtHighlight: OpenCourtHighlight
 
   constructor(canvas: HTMLCanvasElement) {
     // -------------------------------------------------------------------------
@@ -109,6 +256,11 @@ export class GameRenderer {
     // エフェクトシステム
     // -------------------------------------------------------------------------
     this.effects = new EffectSystem(this.scene)
+
+    // -------------------------------------------------------------------------
+    // オープンコート床ハイライト(IMPROVEMENTS §4 高)
+    // -------------------------------------------------------------------------
+    this.openCourtHighlight = new OpenCourtHighlight(this.scene)
   }
 
   // ---------------------------------------------------------------------------
@@ -187,6 +339,10 @@ export class GameRenderer {
     this.ballEntity.update(dt, world)
     this.playerEntity.update(dt, world.player)
     this.opponentEntity.update(dt, world.opponent)
+
+    // オープンコート床ハイライト更新(IMPROVEMENTS §4 高)
+    // WorldView.openCourt が non-null のとき指定位置に光る床グローを表示する。
+    this.openCourtHighlight.update(dt, world.openCourt)
 
     // エフェクト更新
     this.effects.update(dt)

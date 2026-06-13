@@ -21,6 +21,7 @@ import {
   STAMINA_GAUGE_YELLOW,
   PLAYER_PERSONAS,
   PERSONA_ORDER,
+  MOMENTUM_FULL_STREAK,
 } from '../constants'
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,8 @@ interface HudCache {
   /** 円形ゲージ: 前回の pct 値(差分更新用) */
   playerStaminaPct: number
   opponentStaminaPct: number
+  /** モメンタムインジケータの前回値(差分更新用) */
+  playerMomentum: number
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +321,8 @@ export class UI {
   private readonly hudMiPlayer: HTMLElement
   private readonly hudMiDiff: HTMLElement
   private readonly hudMiOpponent: HTMLElement
+  /** モメンタムインジケータのコンテナ要素 */
+  private readonly hudMomentumBar: HTMLElement
 
   // -------------------------------------------------------------------------
   // 円形スタミナゲージ(キャラ頭上追従)
@@ -381,6 +386,7 @@ export class UI {
     serveType: 'flat',
     playerStaminaPct: -1,
     opponentStaminaPct: -1,
+    playerMomentum: -999,
   }
 
   constructor(root: HTMLElement, handlers: UIHandlers) {
@@ -415,6 +421,7 @@ export class UI {
     this.hudMiPlayer = hudRefs.miPlayer
     this.hudMiDiff = hudRefs.miDiff
     this.hudMiOpponent = hudRefs.miOpponent
+    this.hudMomentumBar = hudRefs.momentumBar
 
     // ポーズ画面を構築
     this.pauseScreen = this.buildPauseScreen()
@@ -546,20 +553,8 @@ export class UI {
       c.playerStaminaPct = psPct
     }
 
-    // 相手ゲージ
-    const osPct = view.opponentStaminaPct
-    const osScreen = view.opponentStaminaScreen
-    if (osScreen) {
-      this.staminaRingOpponent.classList.remove('hidden')
-      this.staminaRingOpponent.style.left = `${osScreen.x}px`
-      this.staminaRingOpponent.style.top = `${osScreen.y}px`
-    } else {
-      this.staminaRingOpponent.classList.add('hidden')
-    }
-    if (osPct !== c.opponentStaminaPct) {
-      this.updateStaminaRingArc(this.staminaRingOpponentArc, this.staminaRingOpponentLabel, osPct)
-      c.opponentStaminaPct = osPct
-    }
+    // 相手ゲージは表示しない(IMPROVEMENTS §5.1: 自分のみ控えめに表示)
+    this.staminaRingOpponent.classList.add('hidden')
 
     // --- サーブメーター ---
     if (serveMeter.active !== c.serveMeterActive) {
@@ -650,6 +645,14 @@ export class UI {
       c.chargeValue = newChargeValue
       c.chargeOvercharged = newOvercharged
     }
+
+    // --- モメンタムインジケータ ---
+    // momentum は -1..+1。MOMENTUM_FULL_STREAK 連続得点で +1 になる。
+    const momentum = view.playerMomentum
+    if (momentum !== c.playerMomentum) {
+      this.updateMomentumBar(this.hudMomentumBar, momentum)
+      c.playerMomentum = momentum
+    }
   }
 
   /** マッチ終了画面を表示する */
@@ -690,19 +693,19 @@ export class UI {
     statsTable.appendChild(thead)
 
     const tbody = el('tbody')
-    const statsRows: Array<{ label: string; player: number; opponent: number }> = [
-      { label: 'Winners', player: result.stats.winners.player, opponent: result.stats.winners.opponent },
-      { label: 'Errors', player: result.stats.errors.player, opponent: result.stats.errors.opponent },
-      { label: 'Double Faults', player: result.stats.doubleFaults.player, opponent: result.stats.doubleFaults.opponent },
+
+    // --- 既存スタッツ行(値は数値。少ないほど良い=true なら逆ハイライト) ---
+    const numericRows: Array<{ label: string; player: number; opponent: number; lowerIsBetter?: boolean }> = [
+      { label: 'Winners',      player: result.stats.winners.player,      opponent: result.stats.winners.opponent },
+      { label: 'Errors',       player: result.stats.errors.player,       opponent: result.stats.errors.opponent,      lowerIsBetter: true },
+      { label: 'Double Faults',player: result.stats.doubleFaults.player, opponent: result.stats.doubleFaults.opponent, lowerIsBetter: true },
     ]
 
-    statsRows.forEach(({ label, player, opponent }) => {
+    numericRows.forEach(({ label, player, opponent, lowerIsBetter }) => {
       const tr = el('tr')
       const tdName = el('td', 'stat-name', label)
-      // 勝っている側を強調
-      const pBetter = label === 'Errors' || label === 'Double Faults'
-        ? player <= opponent
-        : player >= opponent
+      // lowerIsBetter のとき値が小さい側を「良い」として強調
+      const pBetter = lowerIsBetter ? player <= opponent : player >= opponent
       const tdPlayer = el('td', pBetter ? 'highlight' : undefined, String(player))
       const tdOpponent = el('td', !pBetter ? 'highlight' : undefined, String(opponent))
       tr.appendChild(tdName)
@@ -710,6 +713,81 @@ export class UI {
       tr.appendChild(tdOpponent)
       tbody.appendChild(tr)
     })
+
+    // --- 平均ラリー長(両者共通の1値: 中央セルに表示) ---
+    {
+      const avgRally = result.stats.totalShots / Math.max(1, result.stats.pointsPlayed)
+      const tr = el('tr')
+      tr.appendChild(el('td', 'stat-name', 'Avg Rally'))
+      // ハイライトなし: コロン区切りではなく colspan=2 で中央1セルに表示
+      const tdVal = el('td', 'stat-center-val')
+      tdVal.setAttribute('colspan', '2')
+      tdVal.textContent = avgRally.toFixed(1) + ' shots'
+      tr.appendChild(tdVal)
+      tbody.appendChild(tr)
+    }
+
+    // --- 1stサーブ率(各サイド) ---
+    {
+      const s = result.stats
+      const pPct = s.firstServeTotal.player > 0
+        ? Math.round((s.firstServeIn.player / s.firstServeTotal.player) * 100)
+        : 0
+      const oPct = s.firstServeTotal.opponent > 0
+        ? Math.round((s.firstServeIn.opponent / s.firstServeTotal.opponent) * 100)
+        : 0
+      const tr = el('tr')
+      tr.appendChild(el('td', 'stat-name', '1st Serve %'))
+      // 1stサーブ率は高い方が良い
+      const pBetter = pPct >= oPct
+      tr.appendChild(el('td', pBetter ? 'highlight' : undefined, `${pPct}%`))
+      tr.appendChild(el('td', !pBetter ? 'highlight' : undefined, `${oPct}%`))
+      tbody.appendChild(tr)
+    }
+
+    // --- ネットポイント勝率(各サイド) ---
+    {
+      const s = result.stats
+      // netPointsPlayed=0 のときは「-」表示
+      const pStr = s.netPointsPlayed.player > 0
+        ? `${Math.round((s.netPointsWon.player / s.netPointsPlayed.player) * 100)}%`
+        : '-'
+      const oStr = s.netPointsPlayed.opponent > 0
+        ? `${Math.round((s.netPointsWon.opponent / s.netPointsPlayed.opponent) * 100)}%`
+        : '-'
+      // ハイライト判定: 両方「-」なら強調なし
+      const pWinPct = s.netPointsPlayed.player > 0
+        ? s.netPointsWon.player / s.netPointsPlayed.player
+        : -1
+      const oWinPct = s.netPointsPlayed.opponent > 0
+        ? s.netPointsWon.opponent / s.netPointsPlayed.opponent
+        : -1
+      const pBetter = pWinPct >= 0 && pWinPct >= oWinPct
+      const oBetter = oWinPct >= 0 && oWinPct > pWinPct
+      const tr = el('tr')
+      tr.appendChild(el('td', 'stat-name', 'Net Win %'))
+      tr.appendChild(el('td', pBetter ? 'highlight' : undefined, pStr))
+      tr.appendChild(el('td', oBetter ? 'highlight' : undefined, oStr))
+      tbody.appendChild(tr)
+    }
+
+    // --- 走らせ距離(各サイド、整数 m) ---
+    // この値は「相手を走らせた距離」=自分が打ったことで相手が走った合計距離
+    // stats.runDistance は「自プレイヤーの移動距離」なので、表示は入れ替えて
+    // 「相手を走らせた距離=相手の runDistance」として示す
+    {
+      const s = result.stats
+      // You 列: 相手(opponent)を走らせた=opponentの総移動距離
+      // CPU 列: プレイヤー(player)を走らせた=playerの総移動距離
+      const playerForcedRun = Math.round(s.runDistance.opponent)
+      const opponentForcedRun = Math.round(s.runDistance.player)
+      const pBetter = playerForcedRun >= opponentForcedRun
+      const tr = el('tr')
+      tr.appendChild(el('td', 'stat-name', 'Ran (m)'))
+      tr.appendChild(el('td', pBetter ? 'highlight' : undefined, String(playerForcedRun)))
+      tr.appendChild(el('td', !pBetter ? 'highlight' : undefined, String(opponentForcedRun)))
+      tbody.appendChild(tr)
+    }
 
     statsTable.appendChild(tbody)
     statsWrap.appendChild(statsTable)
@@ -1045,6 +1123,8 @@ export class UI {
     miPlayer: HTMLElement
     miDiff: HTMLElement
     miOpponent: HTMLElement
+    /** モメンタムインジケータのコンテナ */
+    momentumBar: HTMLElement
   } {
     // --- スコアボード ---
     const scoreboard = el('div', 'hud-scoreboard')
@@ -1097,6 +1177,12 @@ export class UI {
     matchInfoRow.appendChild(miDiff)
     matchInfoRow.appendChild(miOpponent)
     scoreboard.appendChild(matchInfoRow)
+
+    // --- モメンタムインジケータ(スコアボード下部に配置) ---
+    // momentum −1..+1 の正の時のみ炎アイコンを表示する。
+    // MOMENTUM_FULL_STREAK 連続得点で満タン(+1)。
+    const momentumBar = el('div', 'hud-momentum hidden')
+    scoreboard.appendChild(momentumBar)
 
     container.appendChild(scoreboard)
 
@@ -1206,6 +1292,7 @@ export class UI {
       miPlayer,
       miDiff,
       miOpponent,
+      momentumBar,
     }
   }
 
@@ -1349,6 +1436,56 @@ export class UI {
       // 円形ゲージ: -1 で無効化
       playerStaminaPct: -1,
       opponentStaminaPct: -1,
+      // モメンタム: -999 で無効化(次フレームで必ず再描画)
+      playerMomentum: -999,
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // モメンタムインジケータ更新
+  // -------------------------------------------------------------------------
+
+  /**
+   * モメンタムインジケータを momentum(−1..+1)に応じて更新する。
+   * momentum > 0 のとき炎アイコン(🔥)の数と輝度でモメンタムの強さを表現する。
+   * momentum <= 0 のときは非表示にして控えめにする。
+   *
+   * MOMENTUM_FULL_STREAK 連続得点が +1 なので、
+   * 連続得点 1 点 = 1/MOMENTUM_FULL_STREAK、2点 = 2/3、3点(以上) = 1.0。
+   * アイコン数は ceil(momentum * MOMENTUM_FULL_STREAK) で 1〜MOMENTUM_FULL_STREAK 個。
+   */
+  private updateMomentumBar(container: HTMLElement, momentum: number): void {
+    if (momentum <= 0) {
+      // 勢いなし・相手が連続得点中 → 非表示
+      container.classList.add('hidden')
+      container.innerHTML = ''
+      return
+    }
+
+    container.classList.remove('hidden')
+    container.innerHTML = ''
+
+    // 表示するアイコン数: momentum を MOMENTUM_FULL_STREAK で正規化して切り上げ
+    const iconCount = Math.ceil(momentum * MOMENTUM_FULL_STREAK)
+    // 強さ(0..1): 炎の輝度・グロー強度に使う
+    const strength = Math.min(1, momentum)
+
+    // ラベル
+    const label = el('span', 'momentum-label', '🔥')
+    container.appendChild(label)
+
+    // 炎アイコンをアイコン数だけ追加
+    for (let i = 0; i < iconCount; i++) {
+      // 最後のアイコンほど明るくグローが強い
+      const iconStrength = (i + 1) / iconCount
+      const icon = el('span', 'momentum-icon')
+      icon.textContent = '🔥'
+      // CSS カスタムプロパティでグロー強度を渡す
+      icon.style.setProperty('--s', String(iconStrength * strength))
+      container.appendChild(icon)
+    }
+
+    // コンテナ全体のグロー強度を CSS カスタムプロパティで設定
+    container.style.setProperty('--momentum', String(strength))
   }
 }
