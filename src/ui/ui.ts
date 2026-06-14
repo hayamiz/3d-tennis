@@ -23,6 +23,7 @@ import {
   STAMINA_GAUGE_YELLOW,
   PLAYER_PERSONAS,
   PERSONA_ORDER,
+  DIFFICULTY_LABELS,
   MOMENTUM_FULL_STREAK,
   TUNABLES,
   SURFACE_PARAMS,
@@ -1247,22 +1248,27 @@ export class UI {
     const diffGroup = el('div', 'option-group')
     diffGroup.appendChild(el('div', 'option-label', 'Difficulty'))
     const diffButtons = el('div', 'option-buttons')
-    const difficulties: Difficulty[] = ['easy', 'normal', 'hard']
-    const diffLabels: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' }
+    const difficulties: Difficulty[] = ['easy', 'normal', 'hard', 'veryHard', 'extreme']
 
     const diffBtnMap = new Map<Difficulty, HTMLButtonElement>()
     difficulties.forEach(d => {
       const btn = el('button', `opt-btn${d === this.selectedDifficulty ? ' selected' : ''}`,
-        diffLabels[d])
+        DIFFICULTY_LABELS[d])
+      // extreme は専用クラスで赤く強調(危険度の演出)
+      if (d === 'extreme') btn.classList.add('opt-btn-extreme')
       btn.addEventListener('click', () => {
         this.selectedDifficulty = d
         diffBtnMap.forEach((b, key) => {
           b.classList.toggle('selected', key === d)
         })
+        // extreme 選択時はメニュー画面全体の色味を変えてヤバさを表現する。
+        screen.classList.toggle('extreme-mode', d === 'extreme')
       })
       diffBtnMap.set(d, btn)
       diffButtons.appendChild(btn)
     })
+    // 初期選択が extreme の場合に備えて反映
+    screen.classList.toggle('extreme-mode', this.selectedDifficulty === 'extreme')
     diffGroup.appendChild(diffButtons)
     options.appendChild(diffGroup)
 

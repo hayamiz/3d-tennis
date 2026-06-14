@@ -430,6 +430,45 @@ export const AI_PROFILES: Record<Difficulty, AIProfile> = {
     aggressiveness: 0.75, blunderRate: 0.015, servePower1st: 0.84, servePower2nd: 0.68,
     leaveOutClearProb: 0.98, leaveOutEdgeProb: 0.55, returnPositioning: 1.0,
   },
+  // hard の一段上。反応・正確さ・サーブを強化。加えて敵ペルソナの基礎能力に
+  // VERYHARD_RATING_BONUS を上乗せする(buildMatch で適用)。
+  veryHard: {
+    reactionDelay: 0.10, speedScale: 1.10, extraAimNoise: 0.15,
+    aggressiveness: 0.85, blunderRate: 0.005, servePower1st: 0.90, servePower2nd: 0.74,
+    leaveOutClearProb: 0.99, leaveOutEdgeProb: 0.62, returnPositioning: 1.0,
+  },
+  // さらに一段上。ほぼノーミスで反応も最速。敵ペルソナ基礎能力に EXTREME_RATING_BONUS。
+  extreme: {
+    reactionDelay: 0.06, speedScale: 1.12, extraAimNoise: 0.06,
+    aggressiveness: 0.92, blunderRate: 0.0, servePower1st: 0.95, servePower2nd: 0.80,
+    leaveOutClearProb: 1.0, leaveOutEdgeProb: 0.70, returnPositioning: 1.0,
+  },
+}
+
+// 高難易度では敵ペルソナの基礎能力値(ratings)に一律ボーナスを上乗せして地力を底上げする
+// (GAME_DESIGN §7.2)。一律加算なのでペルソナの個性(相対的な強み弱み)は保たれる。
+// ratings は本来 1..5 だが、倍率導出時のみ上限 6 まで拡張を許す(plyaer 側には掛けない)。
+export let VERYHARD_RATING_BONUS = 0.75
+export let EXTREME_RATING_BONUS = 1.5
+
+/** 難易度に応じた敵ペルソナ ratings ボーナス(easy/normal/hard は 0) */
+export function opponentRatingBonus(d: Difficulty): number {
+  return d === 'veryHard' ? VERYHARD_RATING_BONUS : d === 'extreme' ? EXTREME_RATING_BONUS : 0
+}
+
+/** ratings に一律ボーナスを加える(各軸 [1, 6] にクランプ)。bonus=0 はそのまま返す */
+export function boostRatings(r: PersonaRatings, bonus: number): PersonaRatings {
+  if (bonus === 0) return r
+  const c = (v: number) => Math.max(1, Math.min(6, v + bonus))
+  return {
+    serve: c(r.serve), power: c(r.power), spin: c(r.spin),
+    speed: c(r.speed), stamina: c(r.stamina), finesse: c(r.finesse),
+  }
+}
+
+/** 難易度の表示ラベル(HUD・メニュー共通) */
+export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
+  easy: 'Easy', normal: 'Normal', hard: 'Hard', veryHard: 'Very Hard', extreme: 'EXTREME',
 }
 
 /**

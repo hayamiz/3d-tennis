@@ -17,7 +17,7 @@ export type ShotType = 'flat' | 'topspin' | 'slice' | 'lob' | 'drop'
 /** サーブの種類(docs/GAME_DESIGN.md §5.1)。flat=速い/低い、slice=曲がる/低い、kick=安全/高く弾む */
 export type ServeType = 'flat' | 'slice' | 'kick'
 
-export type Difficulty = 'easy' | 'normal' | 'hard'
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'veryHard' | 'extreme'
 
 /** コートサーフェス(docs/GAME_DESIGN.md §13)。バウンド/球速/色が変わる */
 export type Surface = 'clay' | 'grass' | 'hard'

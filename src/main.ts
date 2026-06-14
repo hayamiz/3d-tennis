@@ -26,6 +26,9 @@ import {
 } from './types'
 import {
   AI_PROFILES,
+  DIFFICULTY_LABELS,
+  opponentRatingBonus,
+  boostRatings,
   BANNER_SEC,
   BASE_HEIGHT_M,
   COURT_HALF_LENGTH,
@@ -606,7 +609,10 @@ function startMatch(cfg: MatchConfig): void {
   const playerPersona = PLAYER_PERSONAS[cfg.playerPersona]
   const opponentPersona = PLAYER_PERSONAS[cfg.opponentPersona]
   playerMods = personaModifiers(playerPersona.ratings, playerPersona.mental)
-  opponentMods = personaModifiers(opponentPersona.ratings, opponentPersona.mental)
+  // 高難易度(veryHard/extreme)では敵ペルソナの基礎能力に一律ボーナスを上乗せする(GAME_DESIGN §7.2)。
+  // プレイヤー側には掛けない(AI 対 AI の手前側も素の能力)。
+  const oppRatings = boostRatings(opponentPersona.ratings, opponentRatingBonus(cfg.difficulty))
+  opponentMods = personaModifiers(oppRatings, opponentPersona.mental)
   // オートプレイ(AI 対 AI / デモ・検証用): ?auto 付きなら手前コートも AIController で操作する。
   // 通常は手前コートを人間プレイヤー(PlayerController)が操作する。
   playerCtrl = AUTO_PLAY
@@ -629,7 +635,7 @@ function startMatch(cfg: MatchConfig): void {
   ui.setPaused(false)
   // スコアボードにマッチ情報(ペルソナ名・難易度)を表示
   ui.setMatchInfo({
-    difficulty: cfg.difficulty,
+    difficulty: DIFFICULTY_LABELS[cfg.difficulty],
     playerName: playerPersona.name,
     opponentName: opponentPersona.name,
   })

@@ -14,8 +14,8 @@ page.on('console', (m) => {
 await page.goto('http://localhost:4173/', { waitUntil: 'networkidle' })
 await page.waitForTimeout(1000)
 
-// 1ゲーム先取・Hard を選択して開始
-await page.getByRole('button', { name: 'Hard', exact: false }).click()
+// 1ゲーム先取・Hard を選択して開始(exact: 'Very Hard' と区別する)
+await page.getByRole('button', { name: 'Hard', exact: true }).click()
 await page.getByRole('button', { name: /^1 Game$/ }).click()
 await page.getByText(/start/i).first().click()
 await page.waitForTimeout(500)
