@@ -18,7 +18,6 @@ import type {
 import {
   SERVE_SWEET_MIN,
   SERVE_SWEET_MAX,
-  STAMINA_LOW_THRESHOLD,
   STAMINA_MAX,
   STAMINA_GAUGE_GREEN,
   STAMINA_GAUGE_YELLOW,
@@ -567,13 +566,13 @@ export class UI {
     if (playerStamina !== c.playerStamina) {
       const pct = Math.max(0, Math.min(100, (playerStamina / STAMINA_MAX) * 100))
       this.hudStaminaPlayerBar.style.width = `${pct}%`
-      this.hudStaminaPlayerBar.classList.toggle('low', playerStamina < STAMINA_LOW_THRESHOLD)
+      this.hudStaminaPlayerBar.classList.toggle('low', playerStamina < STAMINA_MAX * STAMINA_GAUGE_YELLOW)
       c.playerStamina = playerStamina
     }
     if (opponentStamina !== c.opponentStamina) {
       const pct = Math.max(0, Math.min(100, (opponentStamina / STAMINA_MAX) * 100))
       this.hudStaminaOpponentBar.style.width = `${pct}%`
-      this.hudStaminaOpponentBar.classList.toggle('low', opponentStamina < STAMINA_LOW_THRESHOLD)
+      this.hudStaminaOpponentBar.classList.toggle('low', opponentStamina < STAMINA_MAX * STAMINA_GAUGE_YELLOW)
       c.opponentStamina = opponentStamina
     }
 

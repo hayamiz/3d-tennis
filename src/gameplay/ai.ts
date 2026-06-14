@@ -60,15 +60,17 @@ import {
   SMASH_MOTION_HEIGHT,
   SPRINT_SHOT_PENALTY,
   SPRINT_SPEED,
-  STAMINA_LOW_THRESHOLD,
   STAMINA_MAX,
-  STAMINA_QUALITY_FLOOR,
-  STAMINA_REGEN_IDLE,
-  STAMINA_MOVE_DRAIN_K,
-  STAMINA_SPRINT_EXTRA,
-  moveEconomyMul,
+  STAMINA_COOLDOWN,
+  STAMINA_REGEN,
+  STAMINA_SPRINT_DRAIN,
   STAMINA_POINT_RECOVERY,
-  shotStaminaCost,
+  SERVE_STAMINA_MAX,
+  SPRINT_STOP_PCT,
+  SPRINT_RESUME_PCT,
+  CHARGE_ENABLE_PCT,
+  chargeShotCost,
+  isStrongCharge,
   SWEET_DIST,
   SWING_LOCK_MOVE_FACTOR,
   SWING_LOCK_TIME,
@@ -166,6 +168,8 @@ export class AIController implements Controller {
   private readonly pos = new Vector3(0, 0, 0)
   private readonly vel = new Vector3(0, 0, 0)
   private stamina = STAMINA_MAX
+  private staminaCooldown = 0 // 強い行動後、回復が停止している残り秒数
+  private sprintLocked = false // 切れてスプリント不可の状態(ヒステリシス)
   private sprinting = false
   private swingState: SwingState = 'idle'
   private lastShot: ShotType | null = null
@@ -271,6 +275,9 @@ export class AIController implements Controller {
       0,
       this.effStaminaMax,
     )
+    // ポイント間に休んだので回復クールダウンとスプリントロックは解除する。
+    this.staminaCooldown = 0
+    this.sprintLocked = false
 
     // サーブ位置はポイント合計の偶奇で決まるが、ここでは serveFromRight を
     // サーバー視点の左右として受け取る。AI(奥側)から見た右はプレイヤーの左。
@@ -378,8 +385,8 @@ export class AIController implements Controller {
     if (ctx.phase === 'serve') {
       this.updateServe(dt, ctx)
       // サーブ前は移動目標に応じて動く(positionForReturn 内で moveToward)。
-      // ここでは現在の速度を元にスタミナを加算モデルで更新する。
-      this.updateStamina(dt, this.sprinting, ctx.pressure)
+      // ここでは現在の速度を元にスタミナをクールダウン制で更新する。
+      this.updateStamina(dt, this.sprinting)
       return
     }
 
@@ -387,7 +394,7 @@ export class AIController implements Controller {
       // pointOver / menu / matchOver 中は静止
       this.vel.set(0, 0, 0)
       this.sprinting = false
-      this.updateStamina(dt, false, ctx.pressure)
+      this.updateStamina(dt, false)
       return
     }
 
@@ -396,7 +403,7 @@ export class AIController implements Controller {
     this.updateLeaveDecision(ctx)
     this.decideTarget(ctx)
     this.moveToward(dt)
-    this.updateStamina(dt, this.sprinting, ctx.pressure)
+    this.updateStamina(dt, this.sprinting)
     this.tryHit(ctx)
   }
 
@@ -509,6 +516,9 @@ export class AIController implements Controller {
       },
     })
     ctx.requestServe(power, aimX, serveType)
+    // サーブは強い行動: パワー比例で消費し回復クールダウンをリフレッシュ(GAME_DESIGN §6)。
+    this.stamina = Math.max(0, this.stamina - SERVE_STAMINA_MAX * power)
+    this.staminaCooldown = STAMINA_COOLDOWN
     this.hasServedThisPhase = true
     this.serveArmed = false
     this.swingState = 'swing'
@@ -778,8 +788,8 @@ export class AIController implements Controller {
         wantSprint = walkTime > 0.45
       }
     }
-    // スタミナ 0 ならスプリント不可
-    if (this.stamina <= 0) wantSprint = false
+    // スタミナ切れ中はスプリント不可(ヒステリシス。GAME_DESIGN §6)
+    if (!this.canSprint()) wantSprint = false
     this.sprinting = wantSprint
 
     // スイングロック中は移動速度を SWING_LOCK_MOVE_FACTOR 倍に低下(プレイヤーと同じ挙動)
@@ -823,30 +833,44 @@ export class AIController implements Controller {
   }
 
   /**
-   * 消費倍率 driveMul を返す(IMPROVEMENTS §5.2/5.5)。
-   * driveMul = staminaDrainMul · (1 + (pressureDrainMul − 1)·pressure)
+   * スプリント可否(ヒステリシス)。プレイヤーと同一(GAME_DESIGN §6)。
+   * 残量 ≤ SPRINT_STOP_PCT で切れ、SPRINT_RESUME_PCT を超えるまで再開不可。
    */
-  private driveMul(pressure: number): number {
-    const p = clamp(pressure, 0, 1)
-    return this.mods.staminaDrainMul * (1 + (this.mods.pressureDrainMul - 1) * p)
+  private canSprint(): boolean {
+    const pct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
+    if (this.sprintLocked) {
+      if (pct >= SPRINT_RESUME_PCT) this.sprintLocked = false
+      else return false
+    }
+    if (pct <= SPRINT_STOP_PCT) {
+      this.sprintLocked = true
+      return false
+    }
+    return true
+  }
+
+  /** チャージ(強打)の可否。残量 ≥ CHARGE_ENABLE_PCT で強打できる(§6) */
+  private canCharge(): boolean {
+    const pct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
+    return pct >= CHARGE_ENABLE_PCT
   }
 
   /**
-   * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
-   * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
-   *             − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul
-   * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
-   * moveEconomyMul はスピード由来の移動燃費(打球コストには掛けない。STAMINA_MOVE_ECONOMY_K で調整)。
+   * スタミナ更新(クールダウン制。GAME_DESIGN §6 / ARCHITECTURE §6.5)。プレイヤーと同一。
+   * - スプリント中: STAMINA_SPRINT_DRAIN·dt を消費しクールダウンをリフレッシュ。
+   * - クールダウン中は回復しない。経過後 STAMINA_REGEN·dt 回復。
+   * 打球による強打消費・リフレッシュは tryHit 側で行う。
    */
-  private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
-    const speed = Math.hypot(this.vel.x, this.vel.z)
-    const drive = this.driveMul(pressure)
-    const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
-    const drain =
-      (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) *
-      drive *
-      moveEconomyMul(this.mods.moveSpeedMul)
-    this.stamina = clamp(this.stamina + (regen - drain) * dt, 0, this.effStaminaMax)
+  private updateStamina(dt: number, sprinting: boolean): void {
+    if (sprinting) {
+      this.stamina = Math.max(0, this.stamina - STAMINA_SPRINT_DRAIN * dt)
+      this.staminaCooldown = STAMINA_COOLDOWN
+    }
+    if (this.staminaCooldown > 0) {
+      this.staminaCooldown = Math.max(0, this.staminaCooldown - dt)
+    } else {
+      this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_REGEN * dt)
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -897,16 +921,12 @@ export class AIController implements Controller {
     })
     ctx.requestShot(req)
 
-    // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
-    // スマッシュ判定は shot.ts と同条件: flat かつ 打点高 ≥ SMASH_MIN_HEIGHT かつ
-    // ネットからの距離 |hitPos.z| ≤ SMASH_MAX_DEPTH。
-    // AI はチャージ演出がないため charge は 0 を渡す。
-    const isSmash =
-      req.type === 'flat' &&
-      bpos.y >= SMASH_MIN_HEIGHT &&
-      Math.abs(bpos.z) <= SMASH_MAX_DEPTH
-    const cost = shotStaminaCost(req.type, 0, isSmash) * this.driveMul(ctx.pressure)
-    this.stamina = Math.max(0, this.stamina - cost)
+    // 打球時のスタミナ消費(強打のみ。GAME_DESIGN §6)。チャージ量に比例し、弱打は無料。
+    // 強打のときだけ消費し回復クールダウンをリフレッシュ(連打で確実に減る)。
+    if (isStrongCharge(req.charge)) {
+      this.stamina = Math.max(0, this.stamina - chargeShotCost(req.charge))
+      this.staminaCooldown = STAMINA_COOLDOWN
+    }
 
     this.lastShot = req.type
 
@@ -946,18 +966,8 @@ export class AIController implements Controller {
       distFactor = lerp(1.0, QUALITY_MIN, t)
     }
 
-    // スタミナ係数: 閾値以上で 1.0、0 で floor へ線形。
-    // 低下閾値は有効上限 effStaminaMax に比例させる(中立倍率では従来と同一)。
-    const lowThreshold = STAMINA_LOW_THRESHOLD * this.mods.staminaMaxMul
-    let staminaFactor: number
-    if (this.stamina >= lowThreshold) {
-      staminaFactor = 1.0
-    } else {
-      const t = this.stamina / lowThreshold
-      staminaFactor = lerp(STAMINA_QUALITY_FLOOR, 1.0, t)
-    }
-
-    let q = distFactor * staminaFactor
+    // スタミナによる品質低下は廃止(切れペナルティは「強打不可・スプリント不可」の能力ゲート。§6)。
+    let q = distFactor
     if (this.sprinting) q -= SPRINT_SHOT_PENALTY
     // モメンタム/プレッシャー(既存要素 → momentum → pressure → クランプ)。
     // q *= 1 + MOMENTUM_QUALITY_K·momentum(連続得点 + で微増、連続失点 − で微減)。
@@ -1091,7 +1101,8 @@ export class AIController implements Controller {
     const chargeBase = 0.3 + 0.7 * quality * (1 - stretched) * (0.6 + 0.4 * this.profile.aggressiveness)
     // 低打点ペナルティ: low が 1 のとき最大 0.4 下げる(高チャージ抑制)
     const lowChargeReducer = low * 0.4
-    const charge = clamp(chargeBase - lowChargeReducer, 0, 1.0)
+    // スタミナ切れ中は強打できない(charge=0=通常打)。プレイヤーのチャージゲートと対称(§6)。
+    const charge = this.canCharge() ? clamp(chargeBase - lowChargeReducer, 0, 1.0) : 0
 
     return {
       type: chosen.type,

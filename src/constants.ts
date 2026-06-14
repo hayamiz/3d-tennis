@@ -303,47 +303,53 @@ export const MOVE_X_LIMIT = 6.5
 export const MOVE_Z_MIN = 0.4
 export const MOVE_Z_MAX = 15.5
 
-// スタミナ
+// スタミナ ——「強い行動(強打・スプリント)のクールダウン制」(GAME_DESIGN §6 / ARCHITECTURE §6.5)
+// 強い行動を起こすと所定量を消費し、同時に回復を STAMINA_COOLDOWN 秒だけ停止する。最後の
+// 強い行動からクールダウンが経過して初めて STAMINA_REGEN /s の回復が再開する。クールダウンは
+// ラリー1往復程度に設定してあり、毎回強打するとクールダウンが切れる前に次の強打が来て確実に
+// 減っていく。歩行移動・繋ぎ・タッチ・セーフティ打球は「強い行動」ではなく無料(回復継続)。
 // 注: 体感調整用に一部を `let`(ES module ライブバインディング)にしている。
 // デバッグの調整メニュー(§17 / TUNABLES)が実行時に再代入すると、各モジュールの
 // 参照(updateStamina 等は毎フレーム読む)にそのまま反映される。
-export const STAMINA_MAX = 100
-export let STAMINA_POINT_RECOVERY = 32 // ポイント間(やや控えめ=長丁場で蓄積疲労)
-export let STAMINA_LOW_THRESHOLD = 30 // これ未満で品質低下開始
-export let STAMINA_QUALITY_FLOOR = 0.6 // スタミナ0時の品質係数
+export const STAMINA_MAX = 100 // 基本ストック(= 最大チャージ強打 10 回分)
+export let STAMINA_POINT_RECOVERY = 40 // ポイント間の回復量(長丁場では取り切れず蓄積疲労)
+export let STAMINA_COOLDOWN = 2.5 // s 最後の強い行動から回復停止する時間(≈ラリー1往復)
+export let STAMINA_REGEN = 6 // /s クールダウン経過後の回復レート(満タンまで約17秒)
 
-// 連続消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2)
-// dStamina/dt = +REGEN_IDLE − MOVE_DRAIN_K·speed − SPRINT_EXTRA·[sprinting]
-// (移動・スプリント消費に mods.staminaDrainMul、基礎回復に mods.staminaRegenMul を乗算)
-// 通常ラリーでも徐々に減るよう、基礎回復を抑え移動消費を上げた(100 張り付き対策)。
-export let STAMINA_REGEN_IDLE = 5 // /s 常時の基礎回復(速度0で全量)
-export let STAMINA_MOVE_DRAIN_K = 1.55 // /s あたり(m/s)。drain = K·speed
-export let STAMINA_SPRINT_EXTRA = 12 // /s スプリント時の追加消費
-// スピード由来の移動燃費(IMPROVEMENTS / GAME_DESIGN §6)。speed が中心 r=2 から離れるほど
-// 移動・スプリント消費を増減させる係数。0 で無効(全員同一燃費)。moveEconomyMul() で適用。
-export let STAMINA_MOVE_ECONOMY_K = 0.05
+// 強打(チャージショット)の消費。正規化チャージ c = charge/CHARGE_MAX ∈ [0,1]。
+// c ≥ CHARGE_STRONG_THRESHOLD のショットのみ「強打」= 消費&回復停止の対象(弱打は無料)。
+// コストはチャージ量に比例し、閾値で 0・最大チャージ(c=1)で STRONG_SHOT_COST_MAX。
+// ペルソナによる消費差はなし(誰が打っても同じだけ減る。差はストック量=上限のみ)。
+export let STRONG_SHOT_COST_MAX = 10 // c=1 の強打コスト(= STAMINA_MAX の 1/10)
+export let CHARGE_STRONG_THRESHOLD = 0.35 // これ未満のチャージは弱打(消費なし・CDなし)
+export let STAMINA_SPRINT_DRAIN = 15 // /s スプリント中の消費(移動時間に比例。ペルソナ差なし)
+export let SERVE_STAMINA_MAX = 8 // サーブ(power=1)の消費。強い行動扱い(CD をリフレッシュ)
 
-// 強いショットの打球時消費(インパクト時に1回。IMPROVEMENTS §5.3)
-export const SHOT_STAMINA_BASE: Record<ShotType, number> = {
-  flat: 4, topspin: 3, slice: 1.5, lob: 1, drop: 1,
-}
-export const SHOT_STAMINA_CHARGE = 8 // · min(charge,1)
-export const SHOT_STAMINA_OVERCHARGE = 4 // · max(0, charge−1)/(CHARGE_MAX−1)
-export const SMASH_STAMINA_EXTRA = 4 // スマッシュ成立時の追加
+// スタミナ切れペナルティ(能力ゲート)。effStock に対する割合で判定する。
+// 品質を下げるのではなく「強打不可・スプリント不可」にする。境界の振動を防ぐため
+// スプリントは 2 閾値のヒステリシス(STOP で切れ、RESUME を超えるまで再開不可)。
+// CHARGE_ENABLE は最大強打1発分(STRONG_SHOT_COST_MAX)を上回るよう設定し、
+// 「チャージを始められた=最後まで打ち切れる」を保証する。
+export let SPRINT_STOP_PCT = 0.03 // これ以下でスプリント強制停止
+export let SPRINT_RESUME_PCT = 0.18 // これを超えるまでスプリント再開不可
+export let CHARGE_ENABLE_PCT = 0.15 // これ以上でのみチャージ開始可(未満は通常打)
 
-/** ショット1回の消費を算出(IMPROVEMENTS §5.3)。isSmash はスマッシュ成立時 true */
-export function shotStaminaCost(type: ShotType, charge: number, isSmash: boolean): number {
-  const c = Math.max(0, Math.min(CHARGE_MAX, charge))
-  let cost = SHOT_STAMINA_BASE[type]
-  cost += SHOT_STAMINA_CHARGE * Math.min(c, 1)
-  cost += SHOT_STAMINA_OVERCHARGE * (Math.max(0, c - 1) / Math.max(CHARGE_MAX - 1, 1e-6))
-  if (isSmash) cost += SMASH_STAMINA_EXTRA
-  return cost
+/** 強打かどうか(正規化チャージ c = charge/CHARGE_MAX ≥ 閾値) */
+export function isStrongCharge(charge: number): boolean {
+  return charge / CHARGE_MAX >= CHARGE_STRONG_THRESHOLD
 }
 
-// スタミナ可視化(IMPROVEMENTS §5.8)。pct = stamina/effStaminaMax で判定。
+/** チャージショットのスタミナ消費(チャージ量に比例。弱打=0。ペルソナ差なし) */
+export function chargeShotCost(charge: number): number {
+  const c = Math.max(0, Math.min(1, charge / CHARGE_MAX))
+  const th = CHARGE_STRONG_THRESHOLD
+  if (c < th) return 0
+  return STRONG_SHOT_COST_MAX * ((c - th) / Math.max(1 - th, 1e-6))
+}
+
+// スタミナ可視化(GAME_DESIGN §6)。pct = stamina/effStock で判定。
 export const STAMINA_GAUGE_GREEN = 0.6 // これ以上は緑(余裕)
-export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意) = LOW_THRESHOLD/MAX
+export const STAMINA_GAUGE_YELLOW = 0.3 // これ以上は黄(注意)
 export const STAMINA_SWEAT_START = 0.5 // この割合未満で発汗開始(早めに出して気づきやすく)
 export const STAMINA_SWEAT_MAX_RATE = 20 // /s(pct→0 での放出レート。50%→0% を線形に増加)
 
@@ -548,12 +554,10 @@ export function personaModifiers(r: PersonaRatings, mental: number): PersonaModi
     returnSolidMul: 1.3 - 0.12 * r.spin,
     moveSpeedMul: 0.88 + 0.06 * r.speed,
     reachMul: 0.92 + 0.035 * r.speed,
-    // スタミナ系はレーティングの効き幅を圧縮(影響度を緩和)。低スタミナ(例ニシゴオリ s=2)が
-    // 早く切れすぎる一方でグラインダー(s=5)が極端に持つ差を縮める。中立(全1.0)は s≈2.5〜3。
-    // 旧: maxMul=0.7+0.12s / drainMul=1.2−0.1s / regenMul=0.8+0.1s(差が大きすぎた)。
-    staminaMaxMul: 0.8 + 0.1 * r.stamina,
-    staminaDrainMul: 1.14 - 0.08 * r.stamina,
-    staminaRegenMul: 0.84 + 0.09 * r.stamina,
+    // スタミナのペルソナ差は「ストック量(上限)のみ」。消費・回復・クールダウンは全員共通
+    // (強打・スプリントのコストはペルソナ非依存)。これで旧モデルの「上限+消費+回復」三重取り
+    // による満タン張り付きを解消する。s=3 中心で基本ストック 100(= 最大強打 10 回分)。
+    staminaMaxMul: 0.7 + 0.1 * r.stamina, // s1→0.8(8発) / s3→1.0(10発) / s5→1.2(12発)
     touchNoiseMul: 1.3 - 0.12 * r.finesse,
     returnTouchMul: 1.2 - 0.1 * r.finesse,
     // 精神力(隠し mental 由来。IMPROVEMENTS §5.5)
@@ -575,26 +579,11 @@ function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x
 }
 
-/**
- * スピード由来の移動燃費倍率(ライブ。移動・スプリント消費に乗算、打球コストには掛けない)。
- * 移動消費 K·speed は距離で積分すると速度に依らず公平だが、速い選手は移動時間が短いぶん
- * 待機回復の取り分が減り損をする。これを相殺し「速さ=広く省エネに動ける」を報いる割引。
- * 強さは STAMINA_MOVE_ECONOMY_K(デバッグスライダー)でライブ調整。speed の中心は r=2。
- * moveSpeedMul から中心差 (r.speed − 2) を逆算する(式 moveSpeedMul=0.88+0.06·r と整合させること)。
- * 下限 0.5 でクランプ(係数を上げても消費が反転しない)。
- * 例(K=0.05): speed5→0.85 / 3→0.95 / 2→1.00 / 1→1.05。
- */
-export function moveEconomyMul(moveSpeedMul: number): number {
-  const speedDelta = (moveSpeedMul - 1.0) / 0.06 // = r.speed − 2
-  const mul = 1 - STAMINA_MOVE_ECONOMY_K * speedDelta
-  return mul < 0.5 ? 0.5 : mul
-}
-
 /** 中立倍率(全 1.0)。ペルソナ未指定(テスト・ダミー)時のフォールバック */
 export const NEUTRAL_PERSONA_MODIFIERS: PersonaModifiers = {
   serveSpeedMul: 1, serveFaultMul: 1, shotSpeedMul: 1, chargeGainMul: 1,
   aimNoiseMul: 1, netMarginMul: 1, returnSolidMul: 1, moveSpeedMul: 1,
-  reachMul: 1, staminaMaxMul: 1, staminaDrainMul: 1, staminaRegenMul: 1,
+  reachMul: 1, staminaMaxMul: 1,
   touchNoiseMul: 1, returnTouchMul: 1, clutchRecoveryMul: 1, pressureDrainMul: 1,
   // 中立は控えめなベースライナー寄り(主に静止しているのは着地点付近)
   netRushTendency: 0.3,
@@ -618,34 +607,29 @@ export interface Tunable {
 
 export const TUNABLES: Tunable[] = [
   {
-    key: 'staminaMoveDrainK', label: '移動消費', min: 0, max: 4, step: 0.05,
-    desc: '移動の速さに比例して減るスタミナ /s(m/s あたり)。上げると走り回るだけで消耗する。',
-    get: () => STAMINA_MOVE_DRAIN_K, set: (v) => { STAMINA_MOVE_DRAIN_K = v },
+    key: 'staminaCooldown', label: '回復停止時間', min: 0.5, max: 6, step: 0.1,
+    desc: '強い行動(強打・スプリント)後に回復が止まる秒数。ラリー1往復より長いと連打で確実に減る。',
+    get: () => STAMINA_COOLDOWN, set: (v) => { STAMINA_COOLDOWN = v },
   },
   {
-    key: 'staminaRegenIdle', label: '基礎回復', min: 0, max: 15, step: 0.5,
-    desc: '常時の基礎回復 /s(静止で全量)。下げると回復が追いつかず枯れやすい。',
-    get: () => STAMINA_REGEN_IDLE, set: (v) => { STAMINA_REGEN_IDLE = v },
+    key: 'staminaRegen', label: '回復レート', min: 0, max: 20, step: 0.5,
+    desc: 'クールダウン経過後の回復 /s。下げると一度バテると立て直しにくい。',
+    get: () => STAMINA_REGEN, set: (v) => { STAMINA_REGEN = v },
   },
   {
-    key: 'staminaSprintExtra', label: 'スプリント消費', min: 0, max: 30, step: 1,
-    desc: 'スプリント中の追加消費 /s。上げると全力疾走の代償が大きくなる。',
-    get: () => STAMINA_SPRINT_EXTRA, set: (v) => { STAMINA_SPRINT_EXTRA = v },
+    key: 'strongShotCostMax', label: '強打消費(最大)', min: 0, max: 30, step: 1,
+    desc: '最大チャージ強打1発の消費。基本ストック100をこの値で割った回数だけ強打できる。',
+    get: () => STRONG_SHOT_COST_MAX, set: (v) => { STRONG_SHOT_COST_MAX = v },
   },
   {
-    key: 'staminaMoveEconomyK', label: '速さの燃費', min: 0, max: 0.2, step: 0.01,
-    desc: 'スピード由来の移動燃費の効き。上げるほど足の速い選手ほど移動消費が軽くなる(0で全員同一)。',
-    get: () => STAMINA_MOVE_ECONOMY_K, set: (v) => { STAMINA_MOVE_ECONOMY_K = v },
+    key: 'chargeStrongThreshold', label: '強打しきい値', min: 0, max: 1, step: 0.05,
+    desc: '正規化チャージがこの値以上で「強打」(消費&回復停止)。未満は無料の繋ぎ。',
+    get: () => CHARGE_STRONG_THRESHOLD, set: (v) => { CHARGE_STRONG_THRESHOLD = v },
   },
   {
-    key: 'staminaLowThreshold', label: '品質低下しきい値', min: 0, max: 80, step: 1,
-    desc: 'この残量(%)未満でショット品質が落ち始める。上げると早めにバテの影響が出る。',
-    get: () => STAMINA_LOW_THRESHOLD, set: (v) => { STAMINA_LOW_THRESHOLD = v },
-  },
-  {
-    key: 'staminaQualityFloor', label: '枯渇時の品質', min: 0.2, max: 1, step: 0.02,
-    desc: 'スタミナ0%でのショット品質係数。下げるとバテたときの精度低下が激しくなる。',
-    get: () => STAMINA_QUALITY_FLOOR, set: (v) => { STAMINA_QUALITY_FLOOR = v },
+    key: 'staminaSprintDrain', label: 'スプリント消費', min: 0, max: 40, step: 1,
+    desc: 'スプリント中の消費 /s(移動時間に比例)。上げると全力疾走が早く枯れる。',
+    get: () => STAMINA_SPRINT_DRAIN, set: (v) => { STAMINA_SPRINT_DRAIN = v },
   },
   {
     key: 'staminaPointRecovery', label: 'ポイント間回復', min: 0, max: 100, step: 1,

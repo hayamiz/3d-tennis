@@ -296,22 +296,43 @@ ground stroke 初速  : speed *= m.shotSpeedMul              (スマッシュ sp
 ```
 最高速        : (WALK/SPRINT)_SPEED *= m.moveSpeedMul
 リーチ        : effReach = REACH * m.reachMul(打球可否ゲートと距離品質係数の両方で使う)
-スタミナ上限  : effStaminaMax = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
+スタミナ上限  : effStock = STAMINA_MAX * m.staminaMaxMul(clamp/全回復/ポイント回復で使う)
 利き手        : physique.handedness==='left' なら swingSide(fore/back)判定を左右反転
 戦術スタンス  : ai.ts のみ。m.netRushTendency(0..1、倍率でなく傾向値)が前へ出やすさ(必要チャンス量)を決める(§11)
 
-スタミナ消費・回復モデル(GAME_DESIGN §6 / IMPROVEMENTS §5.2-5.5):
-  毎フレーム dStamina/dt = +STAMINA_REGEN_IDLE·m.staminaRegenMul·m.clutchRecoveryMul
-                          − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul(m.moveSpeedMul)
-    speed = 現在の水平速度の大きさ。driveMul = m.staminaDrainMul·(1 + (m.pressureDrainMul−1)·pressure)
-    moveEconomyMul = 移動の燃費(speed が高いほど < 1.0)。移動・スプリント消費にのみ乗算し、
-      打球コストには掛けない。速い選手は移動時間が短く待機回復の取り分が減る不利を相殺し、
-      「速さ=広く動ける」を報いる。強さは STAMINA_MOVE_ECONOMY_K でライブ調整(§17 スライダー「速さの燃費」)。
-      moveSpeedMul から speed レーティング中心差を逆算して算出する(constants.ts に集約)。
-  打球インパクト時に1回: stamina −= shotStaminaCost(type,charge,isSmash)·driveMul  // 移動燃費は掛けない
-  ポイント間回復(STAMINA_POINT_RECOVERY)・全回復は ×m.clutchRecoveryMul、上限 effStaminaMax。
-  view.staminaPct = stamina / effStaminaMax を毎フレーム公開(ゲージ・発汗用)。
-  低スタミナの品質低下(calcStaminaFactor)は据え置き(効き方は割合で判定)。
+スタミナ消費・回復モデル — 「強い行動のクールダウン制」(GAME_DESIGN §6):
+  effStock = STAMINA_MAX · m.staminaMaxMul
+  cooldownRemaining: 最後の強い行動からの経過を追うカウンタ(秒)
+
+  毎フレーム(dt):
+    cooldownRemaining = max(0, cooldownRemaining − dt)
+    if cooldownRemaining == 0:
+      stamina = min(effStock, stamina + STAMINA_REGEN · dt)   // 回復はクールダウン経過後のみ
+
+  強い行動が発生したとき(1回のみ):
+    強打(チャージショット, isStrongCharge(charge) == true):
+      stamina −= chargeShotCost(charge)                       // ペルソナ差なし
+      cooldownRemaining = STAMINA_COOLDOWN
+    スプリント中の毎フレーム:
+      stamina −= STAMINA_SPRINT_DRAIN · dt                    // ペルソナ差なし
+      cooldownRemaining = STAMINA_COOLDOWN                     // スプリント中は常にリフレッシュ
+    サーブ(power > 0):
+      stamina −= SERVE_STAMINA_MAX · power                    // ペルソナ差なし
+      cooldownRemaining = STAMINA_COOLDOWN
+
+  歩行移動・繋ぎ・弱打(isStrongCharge==false)・セーフティ打球: 消費なし、回復継続。
+
+  ポイント間回復: stamina += STAMINA_POINT_RECOVERY · m.clutchRecoveryMul, 上限 effStock。
+  ポイント間にクールダウンとスプリントロックは解除。
+  view.staminaPct = stamina / effStock を毎フレーム公開(ゲージ・発汗用)。
+
+スタミナ切れペナルティ — 能力ゲート(品質低下は廃止):
+  canCharge:  stamina >= effStock · CHARGE_ENABLE_PCT でのみチャージ開始可
+              (未満=強打不可、通常打のみ。閾値は最大強打1発分を上回り「打ち切れる」を保証)
+  canSprint:  ヒステリシス
+              stamina <= effStock · SPRINT_STOP_PCT    → sprintLocked = true(強制停止)
+              stamina >  effStock · SPRINT_RESUME_PCT  → sprintLocked = false(再開許可)
+              スプリント中は毎フレーム cooldown をリフレッシュし続ける
 ```
 各 ShotRequest には自分の `mods` を添付してソルバへ渡す。
 
@@ -566,8 +587,8 @@ rAF(t):
   `constants.ts` の `TUNABLES`(`key/label/desc/min/max/step/get/set`)を UI が列挙して生成し、
   各行はホバーで `desc` をツールチップ表示する。対象定数は `export let`(ES module ライブ
   バインディング)にしてあり、`set()` の再代入が各モジュールの参照(毎フレーム読む箇所)へ
-  即反映される。主にスタミナ系(基礎回復・移動消費・スプリント消費・速さの燃費・品質低下しきい値・
-  枯渇時品質・ポイント間回復)+ チャージ威力。
+  即反映される。主にスタミナ系(クールダウン時間・回復レート・強打消費・強打しきい値・
+  スプリント消費・ポイント間回復)+ チャージ威力。
 - **`?auto`(オートプレイ / AI 対 AI)**: 手前コートも `AIController`(`side='player'`)で操作する
   デモ・挙動検証モード。`AIController` は `side` 以外を `sideSign(this.side)` で吸収して両コートに
   対応する(サーブ弾道は `handleServe` が `server` 側基準で解くため side 非依存)。長いラリーを

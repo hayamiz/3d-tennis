@@ -24,25 +24,25 @@ import {
   MOVE_Z_MIN,
   MOVE_Z_MAX,
   STAMINA_MAX,
-  STAMINA_REGEN_IDLE,
-  STAMINA_MOVE_DRAIN_K,
-  STAMINA_SPRINT_EXTRA,
-  moveEconomyMul,
+  STAMINA_COOLDOWN,
+  STAMINA_REGEN,
+  STAMINA_SPRINT_DRAIN,
   STAMINA_POINT_RECOVERY,
-  STAMINA_LOW_THRESHOLD,
-  STAMINA_QUALITY_FLOOR,
+  SERVE_STAMINA_MAX,
+  SPRINT_STOP_PCT,
+  SPRINT_RESUME_PCT,
+  CHARGE_ENABLE_PCT,
+  chargeShotCost,
+  isStrongCharge,
   REACH,
   REACH_HEIGHT,
   SWEET_DIST,
   QUALITY_MIN,
   SPRINT_SHOT_PENALTY,
   SHOT_PARAMS,
-  SMASH_MIN_HEIGHT,
   SMASH_MOTION_HEIGHT,
-  SMASH_MAX_DEPTH,
   MOMENTUM_QUALITY_K,
   PRESSURE_CHOKE_K,
-  shotStaminaCost,
   AIM_OFFSET_X,
   AIM_OFFSET_Z,
   TARGET_CLAMP_MARGIN,
@@ -116,8 +116,10 @@ export class PlayerController implements Controller {
   private pos = new Vector3(0, 0, COURT_HALF_LENGTH + 0.5)
   private vel = new Vector3(0, 0, 0)
 
-  // スタミナ
+  // スタミナ(強い行動のクールダウン制。GAME_DESIGN §6)
   private stamina = STAMINA_MAX
+  private staminaCooldown = 0 // 強い行動後、回復が停止している残り秒数
+  private sprintLocked = false // 切れてスプリント不可の状態(RESUME 閾値超で解除=ヒステリシス)
 
   // スイング状態管理
   private swingState: import('../types').SwingState = 'idle'
@@ -217,6 +219,9 @@ export class PlayerController implements Controller {
       this.effStaminaMax,
       this.stamina + STAMINA_POINT_RECOVERY * this.mods.clutchRecoveryMul,
     )
+    // ポイント間に休んだので回復クールダウンとスプリントロックは解除する。
+    this.staminaCooldown = 0
+    this.sprintLocked = false
 
     // サーブサイドを保持(サーブ移動のクランプに使用)
     this.serveFromRight = serveFromRight
@@ -278,12 +283,13 @@ export class PlayerController implements Controller {
       this.applyMovement(dt, inp, false)
     }
 
-    // スタミナ更新(常時微回復 − 移動量比例消費 − スプリント追加消費。
-    // プレッシャー(ctx.pressure)で消費倍率が変動する。IMPROVEMENTS §5.2/5.5)
-    this.updateStamina(dt, inp.sprint && this.isActuallyMoving(), ctx.pressure)
+    // スタミナ更新(強い行動のクールダウン制。GAME_DESIGN §6)。
+    // 実際にスプリントできている間だけ消費&回復停止する(入力だけでは消費しない)。
+    const sprintingActive = inp.sprint && this.canSprint() && this.isActuallyMoving()
+    this.updateStamina(dt, sprintingActive)
 
     // ビュー更新
-    this.refreshView(inp.sprint && this.stamina > 0 && this.isActuallyMoving())
+    this.refreshView(sprintingActive)
   }
 
   // ---------------------------------------------------------------------------
@@ -335,6 +341,11 @@ export class PlayerController implements Controller {
         // 選択中のサーブ種類を渡す(ARCHITECTURE §6.4)
         ctx.requestServe(power, aimX, this.serveType)
 
+        // サーブは強い行動: パワー比例で消費し回復クールダウンをリフレッシュ(GAME_DESIGN §6)。
+        // サーブ自体は常に可能(ゲートしない)。ポイント間に回復する。
+        this.stamina = Math.max(0, this.stamina - SERVE_STAMINA_MAX * power)
+        this.staminaCooldown = STAMINA_COOLDOWN
+
         // サーブ後リセット
         this.meterActive = false
         this.meterPhase = 0
@@ -362,7 +373,7 @@ export class PlayerController implements Controller {
     dt: number,
     inp: import('../types').InputState,
   ): void {
-    const isSprinting = inp.sprint && this.stamina > 0
+    const isSprinting = inp.sprint && this.canSprint()
     // 最高速にペルソナ倍率 moveSpeedMul を乗算
     const baseSpeed = (isSprinting ? SPRINT_SPEED : WALK_SPEED) * this.mods.moveSpeedMul
     this.integrateVelocity(dt, inp, baseSpeed, 1)
@@ -394,8 +405,11 @@ export class PlayerController implements Controller {
   ): void {
     // ---- チャージ状態の更新(移動より先に確定させ、移動係数に反映する) ----
     if (this.charging) {
-      // チャージ量を増加(CHARGE_TIME 秒で 1.0、CHARGE_MAX まで)
-      this.charge = Math.min(CHARGE_MAX, this.charge + dt / CHARGE_TIME)
+      // スタミナが CHARGE_ENABLE 以上のときだけチャージが溜まる(GAME_DESIGN §6)。
+      // 切れている間は charge=0 のまま → リリースで通常打(消費・回復停止なし)になる。
+      if (this.canCharge()) {
+        this.charge = Math.min(CHARGE_MAX, this.charge + dt / CHARGE_TIME)
+      }
     } else {
       // 新規にショットキーを押した → チャージ開始(再チャージ不可中は不可)
       if (inp.shotPressed !== null && this.chargeCooldown <= 0) {
@@ -406,7 +420,7 @@ export class PlayerController implements Controller {
     }
 
     // ---- 移動(チャージ/ロック中の速度係数は applyMovement 内で適用) ----
-    const isSprinting = inp.sprint && this.stamina > 0
+    const isSprinting = inp.sprint && this.canSprint()
     this.applyMovement(dt, inp, isSprinting)
 
     // ---- 見送り/未到達の診断ログ(?debug) ----
@@ -654,11 +668,11 @@ export class PlayerController implements Controller {
     const ball = ctx.ball
 
     // 品質計算 (GAME_DESIGN §4.2)
-    // 既存要素(距離・スタミナ・スプリント)→ モメンタム/プレッシャー → クランプ の順。
+    // 距離・スプリント → モメンタム/プレッシャー → クランプ の順。
+    // スタミナによる品質低下は廃止(切れペナルティは「強打不可・スプリント不可」の能力ゲート。§6)。
     const distFactor = this.calcDistFactor(hDist)
-    const staminaFactor = this.calcStaminaFactor()
     const sprintPenalty = isSprinting ? SPRINT_SHOT_PENALTY : 0
-    let q = distFactor * staminaFactor - sprintPenalty
+    let q = distFactor - sprintPenalty
     q = this.applyMomentumPressure(q, ctx)
     const quality = Math.max(QUALITY_MIN, Math.min(1.0, q))
 
@@ -698,15 +712,12 @@ export class PlayerController implements Controller {
       safety: trigger === 'safety',
     })
 
-    // 打球時のスタミナ消費(インパクト時に1回。IMPROVEMENTS §5.3)。
-    // スマッシュ判定は shot.ts と同条件: flat かつ 打点高 ≥ SMASH_MIN_HEIGHT かつ
-    // ネットからの距離 |hitPos.z| ≤ SMASH_MAX_DEPTH。
-    const isSmash =
-      shotType === 'flat' &&
-      ball.pos.y >= SMASH_MIN_HEIGHT &&
-      Math.abs(ball.pos.z) <= SMASH_MAX_DEPTH
-    const cost = shotStaminaCost(shotType, this.charge, isSmash) * this.driveMul(ctx.pressure)
-    this.stamina = Math.max(0, this.stamina - cost)
+    // 打球時のスタミナ消費(強打のみ。GAME_DESIGN §6)。チャージ量に比例し、弱打・繋ぎは
+    // 無料。強打のときだけ消費し、回復クールダウンをリフレッシュ(連打で確実に減る)。
+    if (isStrongCharge(this.charge)) {
+      this.stamina = Math.max(0, this.stamina - chargeShotCost(this.charge))
+      this.staminaCooldown = STAMINA_COOLDOWN
+    }
 
     // swingSide: 打点(ボール)がプレイヤーから見て利き手側(右利きの player は
     // 世界 +x 側)なら 'fore'、逆なら 'back'。左利きは不等号を反転する。
@@ -816,49 +827,51 @@ export class PlayerController implements Controller {
     return q
   }
 
-  /** スタミナ係数: 30% 以上で 1.0、0% で STAMINA_QUALITY_FLOOR へ線形減衰 */
-  private calcStaminaFactor(): number {
-    // 低下閾値判定は有効上限 effStaminaMax を基準にする(中立倍率では従来と同一)
-    const pct = this.stamina / this.effStaminaMax
-    if (pct >= STAMINA_LOW_THRESHOLD / STAMINA_MAX) return 1.0
-    // 0..STAMINA_LOW_THRESHOLD を STAMINA_QUALITY_FLOOR..1.0 に線形補間
-    const t = pct / (STAMINA_LOW_THRESHOLD / STAMINA_MAX)
-    return STAMINA_QUALITY_FLOOR + t * (1.0 - STAMINA_QUALITY_FLOOR)
-  }
-
   // ---------------------------------------------------------------------------
-  // スタミナ更新
+  // スタミナ更新(強い行動のクールダウン制。GAME_DESIGN §6)
   // ---------------------------------------------------------------------------
 
   /**
-   * 消費倍率 driveMul を返す(IMPROVEMENTS §5.2/5.5)。
-   * driveMul = staminaDrainMul · (1 + (pressureDrainMul − 1)·pressure)
-   * 移動・スプリント・打球コストの消費すべてに乗算する。
+   * スプリント可否(ヒステリシス)。境界での ON/OFF 振動を防ぐため 2 閾値を使う:
+   * 残量 ≤ SPRINT_STOP_PCT で切れて sprintLocked に入り、SPRINT_RESUME_PCT を
+   * 超えるまで再開できない。実際にスプリントできているときだけ消費する(updateStamina)。
    */
-  private driveMul(pressure: number): number {
-    const p = Math.max(0, Math.min(1, pressure))
-    return this.mods.staminaDrainMul * (1 + (this.mods.pressureDrainMul - 1) * p)
+  private canSprint(): boolean {
+    const pct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
+    if (this.sprintLocked) {
+      if (pct >= SPRINT_RESUME_PCT) this.sprintLocked = false
+      else return false
+    }
+    if (pct <= SPRINT_STOP_PCT) {
+      this.sprintLocked = true
+      return false
+    }
+    return true
+  }
+
+  /** チャージ開始/継続の可否。残量 ≥ CHARGE_ENABLE_PCT で強打のチャージが溜まる(§6) */
+  private canCharge(): boolean {
+    const pct = this.effStaminaMax > 0 ? this.stamina / this.effStaminaMax : 0
+    return pct >= CHARGE_ENABLE_PCT
   }
 
   /**
-   * 加算モデルのスタミナ更新(IMPROVEMENTS §5.2 / ARCHITECTURE §6.5)。
-   * dStamina/dt = +STAMINA_REGEN_IDLE·staminaRegenMul·clutchRecoveryMul
-   *             − (STAMINA_MOVE_DRAIN_K·speed + STAMINA_SPRINT_EXTRA·[sprinting])·driveMul·moveEconomyMul
-   * speed = 現在の水平速度の大きさ。clamp は [0, effStaminaMax]。
-   * moveEconomyMul はスピード由来の移動燃費(打球コストには掛けない。STAMINA_MOVE_ECONOMY_K で調整)。
+   * スタミナ更新(クールダウン制。GAME_DESIGN §6 / ARCHITECTURE §6.5)。
+   * - スプリント中(sprinting=true): STAMINA_SPRINT_DRAIN·dt を消費し、クールダウンをリフレッシュ。
+   * - クールダウン中(timer>0): 回復しない(timer を減らすのみ)。
+   * - クールダウン経過後: STAMINA_REGEN·dt を回復。
+   * 打球による強打消費・クールダウンリフレッシュは executeShot 側で行う。
    */
-  private updateStamina(dt: number, sprinting: boolean, pressure: number): void {
-    const speed = Math.sqrt(this.vel.x * this.vel.x + this.vel.z * this.vel.z)
-    const drive = this.driveMul(pressure)
-    // 基礎回復(クラッチ回復ボーナス込み)
-    const regen = STAMINA_REGEN_IDLE * this.mods.staminaRegenMul * this.mods.clutchRecoveryMul
-    // 移動量比例消費 + スプリント追加消費(スピード由来の移動燃費 moveEconomyMul を乗算)
-    const drain =
-      (STAMINA_MOVE_DRAIN_K * speed + (sprinting ? STAMINA_SPRINT_EXTRA : 0)) *
-      drive *
-      moveEconomyMul(this.mods.moveSpeedMul)
-    const next = this.stamina + (regen - drain) * dt
-    this.stamina = Math.max(0, Math.min(this.effStaminaMax, next))
+  private updateStamina(dt: number, sprinting: boolean): void {
+    if (sprinting) {
+      this.stamina = Math.max(0, this.stamina - STAMINA_SPRINT_DRAIN * dt)
+      this.staminaCooldown = STAMINA_COOLDOWN
+    }
+    if (this.staminaCooldown > 0) {
+      this.staminaCooldown = Math.max(0, this.staminaCooldown - dt)
+    } else {
+      this.stamina = Math.min(this.effStaminaMax, this.stamina + STAMINA_REGEN * dt)
+    }
   }
 
   // ---------------------------------------------------------------------------

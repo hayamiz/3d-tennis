@@ -96,10 +96,8 @@ export interface PersonaModifiers {
   // スピード
   moveSpeedMul: number
   reachMul: number
-  // スタミナ
+  // スタミナ(ペルソナ差はストック量=上限のみ。消費・回復・クールダウンは全員共通)
   staminaMaxMul: number
-  staminaDrainMul: number
-  staminaRegenMul: number
   // 技巧
   touchNoiseMul: number
   returnTouchMul: number
