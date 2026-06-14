@@ -88,6 +88,21 @@ v_xz ← v_xz + SPIN_BOUNCE · (ω × ŷ)成分の水平射影
 簡略式: 進行方向単位ベクトル d に対し `v_xz += d · (ωx成分 · SPIN_BOUNCE)`、
 `SPIN_BOUNCE = 0.0045`。スピンの符号は §5.4 の規約に従う。
 
+**トップスピンの垂直キック(バウンド後の高い跳ね)**:
+
+バウンド時、進行方向水平単位ベクトル `dir_xz` に対するスピン射影 `proj = dot(ω, dir_xz)` が
+正(トップスピン)のとき、垂直速度に上乗せする:
+
+```
+proj = dot(ω, dir_xz)
+if proj > 0:
+    vel.y += proj · SPIN_BOUNCE_VERTICAL   // SPIN_BOUNCE_VERTICAL = 0.004
+```
+
+トップスピン球が着地後に高く跳ねる「kick」効果を生む(実テニスのクレーコートの跳ね)。
+スライス(proj < 0)には適用しない。チャージが大きいほど回転が強くなり(§6 手順2b)、
+このキックも強くなる。
+
 ### 5.3 ネット衝突
 
 ボールが z=0 平面を横切るフレームで、横断点の y < NET_HEIGHT かつ
@@ -130,6 +145,35 @@ class BallSim {
    `speed ×= CHARGE_POWER_MIN + CHARGE_POWER_GAIN·min(c,1)`。
    c > 1 のとき狙い誤差半径に `(c−1)·OVERCHARGE_NOISE` を加算し、
    `netMargin ×= 1 − OVERCHARGE_NET_SHRINK·(c−1)/(CHARGE_MAX−1)`。
+2c. トップスピン/スライスのチャージ強化(GAME_DESIGN §4.4.2):
+   `cc = min(c, 1)` として、トップスピン/スライスの特性をさらに変化させる。
+   フラット・ロブ・ドロップは変化なし。
+
+   **spinScalar のチャージスケール**:
+   - トップスピン: `spinScalar = 260 × (1 + TOPSPIN_CHARGE_SPIN_GAIN·cc)`
+     (`TOPSPIN_CHARGE_SPIN_GAIN` = 0.6)
+   - スライス:     `spinScalar = −180 × (1 + SLICE_CHARGE_SPIN_GAIN·cc)`
+     (`SLICE_CHARGE_SPIN_GAIN` = 0.6)
+
+   **トップスピンの着地目標調整**:
+   ```
+   xLimit   = COURT_HALF_WIDTH − TARGET_CLAMP_MARGIN
+   targetX *= (1 + TOPSPIN_CHARGE_ANGLE·cc)         // 横角度拡大 (TOPSPIN_CHARGE_ANGLE=0.7)
+   targetX  = clamp(targetX, −xLimit, xLimit)
+
+   shortenRatio = |targetX| / xLimit
+   targetZ     += shortenRatio · TOPSPIN_CHARGE_SHORTEN · cc · sign(d)   // ネット側へ引く
+   // TOPSPIN_CHARGE_SHORTEN=5.0m; ネットから TOPSPIN_MIN_DEPTH(3.0m) 以上でクランプ
+   ```
+   チャージ + 横入力 → 浅くワイドな鋭角(ショートアングル)。チャージ + 直進 → 深く重い球。
+
+   **スライスの着地目標調整**:
+   ```
+   targetZ -= SLICE_CHARGE_DEPTH · cc · sign(d)     // ベースライン側へ伸ばす
+   // SLICE_CHARGE_DEPTH=2.0m; COURT_HALF_LENGTH − TARGET_CLAMP_MARGIN でクランプ
+   ```
+   相手をベースラインに貼り付けて牽制。AI もソルバを共有するため `req.charge` を渡せば自動適用。
+
 3. 初期解: 無抵抗の放物線で hitPos → target を時間 T で結ぶ初速を解析的に算出
    (T は水平距離 / 水平速度から)。
 4. **シミュレート補正**: その初速で `BallSim` と同一の積分を前方実行して着地点

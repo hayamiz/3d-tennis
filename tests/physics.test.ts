@@ -171,7 +171,10 @@ describe('solveShot 着地精度', () => {
         hitPos,
         target,
         quality: 1.0, // ノイズなし
-        charge: 0.5, // 中チャージ
+        // チャージ 0 で純粋な収束を検証する。チャージはトップスピンの横角度・浅さや
+        // スライスの深さで「狙って目標をずらす」仕様(GAME_DESIGN §4.5)になったため、
+        // 収束テストでは無チャージで base 着地点への収束のみを見る。
+        charge: 0,
         incomingSpeed: 18, // 中庸な球威(修飾がほぼ無効になる帯)
       }
       const sol = solveShot(req)
@@ -208,12 +211,29 @@ describe('solveShot 着地精度', () => {
 })
 
 describe('チャージショット', () => {
-  it('charge 1.0 は charge 0 より初速が大きい(同一品質・同一目標)', () => {
-    // ノイズの影響を避けるため品質 1.0(狙いノイズ 0)で比較。
-    // 補正ループは目標へ収束させるが、speed は飛行時間・仰角を通じて
-    // 初速の大きさに反映されるため、チャージ大のほうが速くなる。
+  it('charge 1.0 のフラットは charge 0 より初速が大きい(同一品質・同一目標)', () => {
+    // フラットは速度優先(solveDrive)なのでチャージは初速に直結する(GAME_DESIGN §4.5)。
+    // ノイズの影響を避けるため品質 1.0(狙いノイズ 0)で比較。深い目標で評価する。
     const hitPos = new Vector3(0, 1.0, 10)
-    const target = new Vector3(1.0, 0, -5)
+    const target = new Vector3(1.0, 0, -9)
+    const base: Omit<ShotRequest, 'charge'> = {
+      type: 'flat',
+      hitter: 'player',
+      hitPos,
+      target,
+      quality: 1.0,
+      incomingSpeed: 18,
+    }
+    const noCharge = solveShot({ ...base, charge: 0 })
+    const fullCharge = solveShot({ ...base, charge: 1.0 })
+    expect(fullCharge.vel.length()).toBeGreaterThan(noCharge.vel.length())
+  })
+
+  it('charge 1.0 のトップスピンは charge 0 より回転が強い(沈み込み強化)', () => {
+    // トップスピンのチャージは初速ではなく回転量(沈み込み+跳ね)を強化する(GAME_DESIGN §4.5)。
+    // x=0 の目標で横角度・浅さのシフトを排除し、回転量だけを比較する。
+    const hitPos = new Vector3(0, 1.0, 10)
+    const target = new Vector3(0, 0, -6)
     const base: Omit<ShotRequest, 'charge'> = {
       type: 'topspin',
       hitter: 'player',
@@ -224,7 +244,30 @@ describe('チャージショット', () => {
     }
     const noCharge = solveShot({ ...base, charge: 0 })
     const fullCharge = solveShot({ ...base, charge: 1.0 })
-    expect(fullCharge.vel.length()).toBeGreaterThan(noCharge.vel.length())
+    expect(fullCharge.spin.length()).toBeGreaterThan(noCharge.spin.length())
+  })
+
+  it('charge 1.0 のスライスは charge 0 より着地が深い(ベースライン寄り)', () => {
+    // スライスのチャージは着地をベースライン側へ伸ばす(相手を貼り付ける。GAME_DESIGN §4.5)。
+    const hitPos = new Vector3(0, 1.0, 10)
+    const target = new Vector3(0, 0, -5)
+    const base: Omit<ShotRequest, 'charge'> = {
+      type: 'slice',
+      hitter: 'player',
+      hitPos,
+      target,
+      quality: 1.0,
+      incomingSpeed: 18,
+    }
+    function landZ(charge: number): number {
+      const sol = solveShot({ ...base, charge })
+      const sim = new BallSim()
+      sim.launch(hitPos, sol.vel, sol.spin, 'player')
+      const land = runUntilBounce(sim)
+      return land ? land.pos.z : 0
+    }
+    // 深い = z がより負(ベースライン z=-COURT_HALF_LENGTH 方向)
+    expect(landZ(1.0)).toBeLessThan(landZ(0))
   })
 
   it('オーバーチャージ(1.25)は通常チャージより着地のばらつきが大きい', () => {

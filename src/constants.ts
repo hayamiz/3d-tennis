@@ -41,6 +41,10 @@ export const SPIN_DECAY = 0.1 // ω減衰 /s
 export const REST = 0.75 // バウンス反発係数
 export const BOUNCE_FRICTION = 0.18 // バウンス水平減速
 export const SPIN_BOUNCE = 0.0045 // バウンス時スピン→水平速度変換
+// バウンス時スピン→垂直速度(跳ね上がり)。トップスピン(進行方向への射影 proj>0)のみ
+// 適用し、着地後に高く跳ねて相手の打点を超える「重い球」を再現する(実テニス理論。
+// GAME_DESIGN §5.2)。スライス(proj<0)には効かせない。0 で従来挙動。
+export let SPIN_BOUNCE_VERTICAL = 0.004
 export const SPIN_BOUNCE_DECAY = 0.6 // バウンス時のω残存率
 export const NET_RESTITUTION = 0.12 // ネット衝突の vz 反発
 export const NET_DAMP = 0.25 // ネット衝突の vx,vy 残存率
@@ -101,6 +105,23 @@ export const SWING_LOCK_TIME = 0.35
 export const SWING_LOCK_MOVE_FACTOR = 0.12
 /** 空チャージ(打たずに離した)後の再チャージ不可秒数 */
 export const CHARGE_RELEASE_COOLDOWN = 0.25
+
+// チャージによるショット特徴の強化(GAME_DESIGN §4.4 / §4.5)。cc = min(charge/CHARGE_MAX, 1)。
+// トップスピン: 回転を増やして強く沈ませ(ネット同高でも浅く落とせる)、横の角度を広げて
+//   サイドへ逃がす。横に振った分だけ着地を手前へ引き、浅いショートアングルにする。
+// スライス: 逆回転を増やして滞空・低い失速バウンドを強め、着地をベースライン側へ深く伸ばす。
+/** トップスピンの回転量ゲイン: spinScalar ×(1 + GAIN·cc)。フルで ×1.6(沈み込み+跳ね) */
+export let TOPSPIN_CHARGE_SPIN_GAIN = 0.6
+/** トップスピンの横オフセット拡大: targetX ×(1 + ANGLE·cc)。フルで +70%(サイドへ角度) */
+export let TOPSPIN_CHARGE_ANGLE = 0.7
+/** トップスピンの浅さ引き(m): 横へ振るほど・チャージするほど着地を手前(ネット側)へ */
+export let TOPSPIN_CHARGE_SHORTEN = 5.0
+/** トップスピンの最短着地(ネットからの距離 m)。SHORTEN で手前へ引きすぎないクランプ */
+export const TOPSPIN_MIN_DEPTH = 3.0
+/** スライスの逆回転ゲイン: spinScalar ×(1 + GAIN·cc)。フルで ×1.6(滑り・失速) */
+export let SLICE_CHARGE_SPIN_GAIN = 0.6
+/** スライスの深さ(m): チャージでベースライン側へ最大 DEPTH·cc 深く伸ばす */
+export let SLICE_CHARGE_DEPTH = 2.0
 
 // ---------------------------------------------------------------------------
 // ジャストミート(IMPROVEMENTS §6.1.1)— 操作=リリースで打つ(案A)。
@@ -640,6 +661,36 @@ export const TUNABLES: Tunable[] = [
     key: 'chargePowerGain', label: 'チャージ威力', min: 0, max: 1, step: 0.02,
     desc: 'フルチャージ時のショット初速ゲイン。上げると溜め打ちの威力が増す。',
     get: () => CHARGE_POWER_GAIN, set: (v) => { CHARGE_POWER_GAIN = v },
+  },
+  {
+    key: 'spinBounceVertical', label: 'トップ跳ね', min: 0, max: 0.02, step: 0.001,
+    desc: 'トップスピンのバウンド後の跳ね上がり量。上げると重い球が高く跳ねて返しにくくなる。',
+    get: () => SPIN_BOUNCE_VERTICAL, set: (v) => { SPIN_BOUNCE_VERTICAL = v },
+  },
+  {
+    key: 'topspinChargeSpin', label: 'トップ回転(溜)', min: 0, max: 1.5, step: 0.05,
+    desc: 'チャージ時のトップスピン回転ゲイン。上げると溜めるほど強く沈み・高く跳ねる。',
+    get: () => TOPSPIN_CHARGE_SPIN_GAIN, set: (v) => { TOPSPIN_CHARGE_SPIN_GAIN = v },
+  },
+  {
+    key: 'topspinChargeAngle', label: 'トップ角度(溜)', min: 0, max: 1.5, step: 0.05,
+    desc: 'チャージ時のトップスピン横オフセット拡大。上げると溜めるほどサイドへ角度をつけられる。',
+    get: () => TOPSPIN_CHARGE_ANGLE, set: (v) => { TOPSPIN_CHARGE_ANGLE = v },
+  },
+  {
+    key: 'topspinChargeShorten', label: 'トップ浅さ(溜)', min: 0, max: 8, step: 0.25,
+    desc: 'チャージ時、横に振るほど着地を手前へ引く量(m)。上げると浅いショートアングルになる。',
+    get: () => TOPSPIN_CHARGE_SHORTEN, set: (v) => { TOPSPIN_CHARGE_SHORTEN = v },
+  },
+  {
+    key: 'sliceChargeSpin', label: 'スライス回転(溜)', min: 0, max: 1.5, step: 0.05,
+    desc: 'チャージ時のスライス逆回転ゲイン。上げると溜めるほど滑って低く失速する。',
+    get: () => SLICE_CHARGE_SPIN_GAIN, set: (v) => { SLICE_CHARGE_SPIN_GAIN = v },
+  },
+  {
+    key: 'sliceChargeDepth', label: 'スライス深さ(溜)', min: 0, max: 4, step: 0.25,
+    desc: 'チャージ時にスライスをベースライン側へ伸ばす量(m)。上げると相手を深く貼り付ける。',
+    get: () => SLICE_CHARGE_DEPTH, set: (v) => { SLICE_CHARGE_DEPTH = v },
   },
 ]
 

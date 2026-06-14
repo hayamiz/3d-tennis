@@ -14,6 +14,7 @@ import {
   REST,
   BOUNCE_FRICTION,
   SPIN_BOUNCE,
+  SPIN_BOUNCE_VERTICAL,
   SPIN_BOUNCE_DECAY,
   NET_HEIGHT,
   NET_HALF_WIDTH,
@@ -104,10 +105,16 @@ function integrate(state: BallState, dt: number, events: BallEvent[]): void {
       // スライス(spinScalar<0)で負 → 失速、となる(§5.2 の意図どおり)。
       const cx = -spin.z
       const cz = spin.x
-      // 水平進行方向への射影成分(トップスピンで前進・バックスピンで失速)
+      // 水平進行方向への射影成分(トップスピンで proj>0・バックスピンで proj<0)
       const proj = cx * dx + cz * dz
       vel.x += dx * proj * SPIN_BOUNCE
       vel.z += dz * proj * SPIN_BOUNCE
+      // 垂直キック: トップスピン(proj>0)のみ跳ね上がりを加える。重い球が着地後に
+      // 高く跳ねて相手の打点を超える挙動(実テニス理論。GAME_DESIGN §5.2)。
+      // スライス(proj<0)は跳ねず低く滑る(失速のみ)ので加えない。
+      if (proj > 0) {
+        vel.y += proj * SPIN_BOUNCE_VERTICAL
+      }
     }
     // スピン残存
     spin.multiplyScalar(SPIN_BOUNCE_DECAY)

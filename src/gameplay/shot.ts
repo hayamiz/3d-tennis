@@ -74,6 +74,15 @@ import {
   JUST_POWER_MUL,
   JUST_AIM_MUL,
   JUST_SPIN_MUL,
+  COURT_HALF_WIDTH,
+  COURT_HALF_LENGTH,
+  TARGET_CLAMP_MARGIN,
+  TOPSPIN_CHARGE_SPIN_GAIN,
+  TOPSPIN_CHARGE_ANGLE,
+  TOPSPIN_CHARGE_SHORTEN,
+  TOPSPIN_MIN_DEPTH,
+  SLICE_CHARGE_SPIN_GAIN,
+  SLICE_CHARGE_DEPTH,
 } from '../constants'
 
 /** ボレー成立の打点高さ下限(これ以上 VOLLEY_MAX_HEIGHT 未満) */
@@ -344,7 +353,13 @@ export function solveShot(req: ShotRequest): ShotSolution {
   if (req.just) speed *= JUST_POWER_MUL
   // ボレーは振り抜かないため初速を VOLLEY_SPEED_CAP で頭打ちにする。
   if (isVolley) speed = Math.min(speed, VOLLEY_SPEED_CAP)
-  let spinScalar = param.spinScalar * spinMul * (req.just ? JUST_SPIN_MUL : 1)
+  // チャージによる回転強化(GAME_DESIGN §4.5)。トップスピンは沈み込み+跳ね、
+  // スライスは滑り・失速を強める(cc=min(c,1) に比例。オーバーチャージでは増えない)。
+  const cc = Math.min(c, 1)
+  const chargeSpinGain =
+    req.type === 'topspin' ? TOPSPIN_CHARGE_SPIN_GAIN : req.type === 'slice' ? SLICE_CHARGE_SPIN_GAIN : 0
+  let spinScalar =
+    param.spinScalar * spinMul * (1 + chargeSpinGain * cc) * (req.just ? JUST_SPIN_MUL : 1)
   // ネット越えマージンにペルソナの netMarginMul を乗算(スピン安定が高いほど安全)。
   let netMargin = param.netMargin * netMarginScale * netMarginMul * m.netMarginMul
 
@@ -358,6 +373,27 @@ export function solveShot(req: ShotRequest): ShotSolution {
       target.x += (dirX / horiz) * depthBias
       target.z += (dirZ / horiz) * depthBias
     }
+  }
+
+  // --- チャージによる着地点の特徴強化(GAME_DESIGN §4.5)---
+  // baseSign: 着地側(相手コート)の z 符号。player(sideSign=+1)→ -1、AI → +1。
+  const baseSign = -sideSign(req.hitter)
+  const xLimit = COURT_HALF_WIDTH - TARGET_CLAMP_MARGIN
+  if (req.type === 'topspin') {
+    // 横オフセット(中央 x=0 からの距離)をチャージで拡大 → サイドへ大きな角度。
+    target.x *= 1 + TOPSPIN_CHARGE_ANGLE * cc
+    target.x = Math.max(-xLimit, Math.min(xLimit, target.x))
+    // 横へ振った分だけ着地を手前(ネット側)へ引く → 浅いショートアングル(沈みで in に収まる)。
+    const angleFrac = Math.min(1, Math.abs(target.x) / xLimit)
+    const shorten = TOPSPIN_CHARGE_SHORTEN * cc * angleFrac
+    target.z += -baseSign * shorten // ネット側へ寄せる(深さを浅く)
+    // 手前へ引きすぎない(ネット手前のクランプ。|z| ≥ TOPSPIN_MIN_DEPTH)。
+    if (Math.abs(target.z) < TOPSPIN_MIN_DEPTH) target.z = baseSign * TOPSPIN_MIN_DEPTH
+  } else if (req.type === 'slice') {
+    // 着地をベースライン側へ深く伸ばす(相手を貼り付け、時間を作る)。
+    const zLimit = COURT_HALF_LENGTH - TARGET_CLAMP_MARGIN
+    target.z += baseSign * (SLICE_CHARGE_DEPTH * cc)
+    if (Math.abs(target.z) > zLimit) target.z = baseSign * zLimit
   }
 
   // --- 手順2.6: 速球の返球(差し込まれ / mishit) — ARCHITECTURE §6.2 / GAME_DESIGN §4.6 ---
