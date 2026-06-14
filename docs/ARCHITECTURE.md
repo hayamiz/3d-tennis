@@ -562,6 +562,11 @@ class GameRenderer {
     `view.swingSide` で フォア/バック の腕の振りを描き分け、
     `view.charging` 中はボール側へテイクバック(深さ ∝ `view.charge`)。
     移動方向へ傾き、`whiff` は別モーション。
+  - **near 視点時のプレイヤー半透明化**: `renderer.ts` の `toggleView()` が `near` に
+    切り替えた際、プレイヤーキャラクターを `CharacterEntity.setTransparent(true)` で
+    不透明度 `CHARACTER_GHOST_OPACITY=0.3` に設定する(汗マテリアルは除外)。
+    **近距離視点でプレイヤー自身がボールを隠さないようにするため**。
+    相手 AI キャラクターは常に不透明のまま。`setMatchup` でキャラ再構成後も現在モードを再適用する。
   - **ペルソナのパラメータ化**(GAME_DESIGN §12 / IMPROVEMENTS §3.6-3.7):
     `CharacterEntity` は `{ team: Side; physique: PersonaPhysique; appearance: PersonaAppearance }`
     を受け取り、`TEAM_PALETTE[team]`(1P青/2P赤)で配色、`physique.heightM/BASE_HEIGHT_M` で
@@ -573,8 +578,14 @@ class GameRenderer {
     ジオメトリ寸法側に適用しスイング/走りアニメ階層を壊さない。物理 `REACH` とは独立。
     `GameRenderer.setMatchup(player, opponent)`(各 `{physique, appearance}`)で
     マッチ開始時に両キャラを再構成する。
-- `camera.ts`: 追従カメラ。位置 `playerPos + (0, 6.5, 9)` へ lerp(係数 3·dt)、
-  注視 `mix(playerPos, ballPos, 0.35)` へ lerp。メニュー中は俯瞰へゆっくり旋回。
+- `camera.ts`: 追従カメラ。**2つの視点モード** `CameraView = 'far' | 'near'` を持ち、
+  `setView()/getView()` で切り替える。`V` キーでトグル(§15 / GAME_DESIGN §3)。
+  - **far(既定・俯瞰寄り後方)**: オフセット `(0, 6.5, 9.0)`、横はプレイヤー位置の 50% 追従、
+    注視 `mix(playerPos, ballPos, 0.35)`。位置・注視ともに lerp(係数 3·dt)。
+  - **near(主観寄り直後・低め)**: オフセット `(0, 2.4, 3.4)`(プレイヤー真後ろ・低め)、
+    横はプレイヤーに完全追従、注視 `mix(playerPos, ballPos, 0.6)` で視線をやや下げ気味
+    (見下ろし高さ約 1.1m)。
+  メニュー中は視点モードに関わらず俯瞰へゆっくり旋回(変更なし)。
 - エフェクト: バウンド時ダストリング(スケール+フェード)、ヒット時フラッシュ。
   `SceneApi.spawnBounceFx(pos)` / `spawnHitFx(pos)` を main から呼ぶ。
 - ライティング: DirectionalLight(影あり、shadowMap 1024)+ HemisphereLight。

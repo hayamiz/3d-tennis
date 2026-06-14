@@ -7,8 +7,11 @@ import * as THREE from 'three'
 import type { WorldView } from '../types'
 
 // 追従カメラのオフセット(プレイヤーに対する相対位置)
+// 'far' = 従来の俯瞰寄り、'near' = プレイヤー直後の主観寄り(視点切替)。
 const FOLLOW_OFFSET_Y = 6.5
 const FOLLOW_OFFSET_Z = 9.0
+const NEAR_OFFSET_Y = 2.2
+const NEAR_OFFSET_Z = 2.8
 
 // lerp 係数: 位置
 const POS_LERP = 3.0
@@ -17,6 +20,10 @@ const TARGET_LERP = 5.0
 
 // ボールと注視点の混合率(0=プレイヤーのみ、1=ボールのみ)
 const BALL_LOOK_MIX = 0.35
+// 主観視点はコート前方(ボール)寄りを多めに見る
+const NEAR_BALL_LOOK_MIX = 0.6
+
+export type CameraView = 'far' | 'near'
 
 // メニュー旋回カメラのパラメータ
 const MENU_RADIUS = 22.0
@@ -26,6 +33,7 @@ const MENU_ORBIT_SPEED = 0.15  // rad/s
 export class CameraController {
   private readonly camera: THREE.PerspectiveCamera
   private menuAngle = 0
+  private view: CameraView = 'far'
 
   // 補間用の現在値
   private currentPos = new THREE.Vector3(0, FOLLOW_OFFSET_Y, FOLLOW_OFFSET_Z)
@@ -40,6 +48,15 @@ export class CameraController {
 
   get threeCamera(): THREE.PerspectiveCamera {
     return this.camera
+  }
+
+  /** 視点モードを設定('far'=俯瞰寄り / 'near'=主観寄り) */
+  setView(view: CameraView): void {
+    this.view = view
+  }
+
+  getView(): CameraView {
+    return this.view
   }
 
   /** キャンバスリサイズ時にアスペクト比を更新 */
@@ -75,18 +92,25 @@ export class CameraController {
   private updateFollowCamera(dt: number, world: WorldView): void {
     const playerPos = world.player.pos
     const ballPos = world.ball.pos
+    const near = this.view === 'near'
 
-    // 目標カメラ位置: プレイヤーの後方上空
+    // 目標カメラ位置: プレイヤーの後方。near はすぐ後ろ・低め(主観寄り)、far は後方上空。
+    const offY = near ? NEAR_OFFSET_Y : FOLLOW_OFFSET_Y
+    const offZ = near ? NEAR_OFFSET_Z : FOLLOW_OFFSET_Z
+    const followX = near ? 1.0 : 0.5 // near はプレイヤー真後ろ、far は横揺れを半分に抑える
     const desiredPos = new THREE.Vector3(
-      playerPos.x * 0.5,                         // 横はプレイヤーの半分追従(急激な揺れを和らげる)
-      FOLLOW_OFFSET_Y,
-      playerPos.z + FOLLOW_OFFSET_Z,
+      playerPos.x * followX,
+      offY,
+      playerPos.z + offZ,
     )
 
-    // 注視点: プレイヤーとボールの混合
-    const lookX = playerPos.x + (ballPos.x - playerPos.x) * BALL_LOOK_MIX
-    const lookY = (playerPos.y + ballPos.y) * 0.5 * BALL_LOOK_MIX + 0.5
-    const lookZ = playerPos.z + (ballPos.z - playerPos.z) * BALL_LOOK_MIX
+    // 注視点: プレイヤーとボールの混合(near はコート前方=ボール寄りを多めに見る)
+    const lookMix = near ? NEAR_BALL_LOOK_MIX : BALL_LOOK_MIX
+    const lookX = playerPos.x + (ballPos.x - playerPos.x) * lookMix
+    const lookY = near
+      ? 1.1 + ballPos.y * 0.15 // 主観: コート前方をやや見下ろす高さ
+      : (playerPos.y + ballPos.y) * 0.5 * BALL_LOOK_MIX + 0.5
+    const lookZ = playerPos.z + (ballPos.z - playerPos.z) * lookMix
     const desiredTarget = new THREE.Vector3(lookX, lookY, lookZ)
 
     // lerp 補間

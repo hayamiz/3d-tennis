@@ -29,6 +29,9 @@ const TRAIL_BASE_RADIUS = BALL_DRAW_RADIUS * 0.85
 // 発光ハロー半径(ボール描画半径の倍率)
 const HALO_RADIUS = BALL_DRAW_RADIUS * 2.8
 
+// 主観視点でプレイヤーを半透明化するときの不透明度(ボールが透けて見える)
+const CHARACTER_GHOST_OPACITY = 0.3
+
 // 着地予測リングの基準半径(m)
 const LANDING_RING_RADIUS = 0.4
 
@@ -853,6 +856,25 @@ export class CharacterEntity {
   }
 
   /** 毎フレーム呼ぶ。位置・向き・スイング・走り・発汗/疲労を更新 */
+  /**
+   * 半透明(ゴースト)表示の切替。主観視点でプレイヤー自身がボールを隠さないようにする。
+   * 体パーツの全マテリアルを透明化する(汗 sweatMat は独自管理なので除外)。
+   */
+  setTransparent(on: boolean): void {
+    const opacity = on ? CHARACTER_GHOST_OPACITY : 1.0
+    this.group.traverse((obj) => {
+      const mesh = obj as THREE.Mesh
+      if (!mesh.isMesh) return
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      for (const m of mats) {
+        if (m === this.sweatMat) continue // 汗は独自に透明度を制御するため触らない
+        m.transparent = on
+        m.opacity = opacity
+        m.needsUpdate = true
+      }
+    })
+  }
+
   update(dt: number, view: PlayerView): void {
     // キャラクター位置
     this.group.position.set(view.pos.x, 0, view.pos.z)

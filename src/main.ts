@@ -105,6 +105,10 @@ window.addEventListener('keydown', (ev) => {
     debugMode = !debugMode
     ui.setDebugVisible(debugMode)
   }
+  // 「V」で視点切替(俯瞰 ⇄ 主観)。主観時はプレイヤーを半透明化してボールを隠さない。
+  if (ev.code === 'KeyV') {
+    renderer.toggleView()
+  }
 })
 
 // ---------------------------------------------------------------------------

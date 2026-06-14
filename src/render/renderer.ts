@@ -417,6 +417,16 @@ export class GameRenderer {
       physique:   opponent.physique,
       appearance: opponent.appearance,
     })
+    // 再構成後も現在の視点モードの半透明設定を反映(主観視点なら半透明のまま)
+    this.playerEntity.setTransparent(this.cameraCtrl.getView() === 'near')
+  }
+
+  /** 視点モードをトグルして新しいモードを返す('far'⇄'near')。主観時はプレイヤーを半透明化 */
+  toggleView(): 'far' | 'near' {
+    const next = this.cameraCtrl.getView() === 'far' ? 'near' : 'far'
+    this.cameraCtrl.setView(next)
+    this.playerEntity.setTransparent(next === 'near')
+    return next
   }
 
   /**
