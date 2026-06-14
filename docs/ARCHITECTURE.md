@@ -155,17 +155,34 @@ class BallSim {
    - スライス:     `spinScalar = −180 × (1 + SLICE_CHARGE_SPIN_GAIN·cc)`
      (`SLICE_CHARGE_SPIN_GAIN` = 0.6)
 
-   **トップスピンの着地目標調整**:
+   **トップスピンの着地目標・弾道調整**:
    ```
    xLimit   = COURT_HALF_WIDTH − TARGET_CLAMP_MARGIN
    targetX *= (1 + TOPSPIN_CHARGE_ANGLE·cc)         // 横角度拡大 (TOPSPIN_CHARGE_ANGLE=0.7)
    targetX  = clamp(targetX, −xLimit, xLimit)
 
-   shortenRatio = |targetX| / xLimit
-   targetZ     += shortenRatio · TOPSPIN_CHARGE_SHORTEN · cc · sign(d)   // ネット側へ引く
-   // TOPSPIN_CHARGE_SHORTEN=5.0m; ネットから TOPSPIN_MIN_DEPTH(3.0m) 以上でクランプ
+   // 好条件ゲート付き「短角アタック」: 打点高・差し込まれなし・横振りのときだけ着地を手前へ引く
+   heightCond = clamp01((hitPos.y − TOPSPIN_ATTACK_H_LOW) / (TOPSPIN_ATTACK_H_GOOD − TOPSPIN_ATTACK_H_LOW))
+                // TOPSPIN_ATTACK_H_LOW=0.7, TOPSPIN_ATTACK_H_GOOD=1.2
+   paceOk     = clamp01(1 − max(0, vIn − RETURN_PACE_THRESH) / RETURN_OVERWHELM_RANGE)
+   angleFrac  = min(1, |targetX| / xLimit)
+   pull       = TOPSPIN_ATTACK_SHORTEN(5.5m) · cc · heightCond · paceOk · angleFrac
+   targetZ   += pull · sign(targetZ)              // ネット側(中央方向)へ引く
+   targetZ    = clamp(targetZ, sign·TOPSPIN_ATTACK_MIN_DEPTH(4.0m), …)  // ネット手前寄りすぎ防止
+
+   // pull ≥ TOPSPIN_DRIVE_MIN_PULL(1.0m): 速度優先ドライブソルバへ切替え(低く速い弾道)
+   if pull >= TOPSPIN_DRIVE_MIN_PULL:
+     speed     = param.speed · powerScale · chargePower · … · TOPSPIN_DRIVE_SPEED_MUL(0.82)
+     netMargin ×= (1 − TOPSPIN_CHARGE_NETLOW·cc)  // ネット通過を低く (TOPSPIN_CHARGE_NETLOW=0.7)
+     → solveDrive(hitPos, target, speed, spinScalar, netMargin, …)
+   else:
+     // 深い/守りのトップスピン: 収束ソルバで安定ラリー軌道
+     apex ×= (1 − TOPSPIN_CHARGE_FLATTEN·cc)      // 山なりを僅かに抑える (TOPSPIN_CHARGE_FLATTEN=0.5)
+     → solveToTarget(hitPos, target, speed, apex, spinScalar, netMargin, …)
    ```
-   チャージ + 横入力 → 浅くワイドな鋭角(ショートアングル)。チャージ + 直進 → 深く重い球。
+   短角アタック成立(高打点・余裕あり・横振り) → 低く速いドライブ弾道でサービスライン付近に鋭く落とす。
+   条件が揃わない場合(低打点・差し込まれ・正面) → pull≈0 で深い既定目標のまま安定した収束ラリー軌道。
+   深さ(z)の基準はいずれも W/S キーで制御し、pull による引き込みがその上に乗る。
 
    **スライスの着地目標調整**:
    ```

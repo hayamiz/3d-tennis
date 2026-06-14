@@ -107,17 +107,33 @@ export const SWING_LOCK_MOVE_FACTOR = 0.12
 export const CHARGE_RELEASE_COOLDOWN = 0.25
 
 // チャージによるショット特徴の強化(GAME_DESIGN §4.4 / §4.5)。cc = min(charge/CHARGE_MAX, 1)。
-// トップスピン: 回転を増やして強く沈ませ(ネット同高でも浅く落とせる)、横の角度を広げて
-//   サイドへ逃がす。横に振った分だけ着地を手前へ引き、浅いショートアングルにする。
+// トップスピン: 回転を増やして強く沈ませ、弾道を低く・速くする(apex を下げる)。低い弾道で
+//   ネットを越えつつ沈み込みで in に収まるので、他ショットより横の打球角度を大きく取れる。
 // スライス: 逆回転を増やして滞空・低い失速バウンドを強め、着地をベースライン側へ深く伸ばす。
 /** トップスピンの回転量ゲイン: spinScalar ×(1 + GAIN·cc)。フルで ×1.6(沈み込み+跳ね) */
 export let TOPSPIN_CHARGE_SPIN_GAIN = 0.6
 /** トップスピンの横オフセット拡大: targetX ×(1 + ANGLE·cc)。フルで +70%(サイドへ角度) */
 export let TOPSPIN_CHARGE_ANGLE = 0.7
-/** トップスピンの浅さ引き(m): 横へ振るほど・チャージするほど着地を手前(ネット側)へ */
-export let TOPSPIN_CHARGE_SHORTEN = 5.0
-/** トップスピンの最短着地(ネットからの距離 m)。SHORTEN で手前へ引きすぎないクランプ */
-export const TOPSPIN_MIN_DEPTH = 3.0
+/** トップスピンの低弾道化: apex ×(1 − FLATTEN·cc)。apex を下げて低く速くする(初速やや増・山なり防止) */
+export let TOPSPIN_CHARGE_FLATTEN = 0.5
+/** トップスピンの低い通過許可: netMargin ×(1 − NETLOW·cc)。ネット越え検証の余裕を削り低い弾道に */
+export let TOPSPIN_CHARGE_NETLOW = 0.7
+/** 着地をこの距離(m)以上手前へ引いた「短角アタック」のトップスピンを速度優先ドライブ(低く速い
+ *  弾道)で打つ。深い目標(引きが小さい)は従来の収束ソルバで安定したラリー軌道のまま。 */
+export let TOPSPIN_DRIVE_MIN_PULL = 1.0
+/** トップスピンのドライブ初速倍率。フラットほど速くしないための抑制(initial speed を控えめに) */
+export let TOPSPIN_DRIVE_SPEED_MUL = 0.82
+// 好条件(打点が低くない・差し込まれていない)で横へ振ったとき、着地を中央寄り(前後の真ん中)へ
+// 引いて「左右の端を狙う短い鋭角」を打てるようにする(GAME_DESIGN §4.5)。深い既定目標のままだと
+// 山なり&ベースライン際になるので、引くほど低く・浅くなる(solveDrive)。
+/** 着地を手前へ引く最大量(m): pull = SHORTEN·cc·heightCond·paceOk·angleFrac */
+export let TOPSPIN_ATTACK_SHORTEN = 5.5
+/** 短い鋭角の最短着地(ネットからの距離 m)。引きすぎ(ネット手前)を防ぐクランプ */
+export const TOPSPIN_ATTACK_MIN_DEPTH = 4.0
+/** 好条件判定の打点高ランプ下端(m)。これ以下では短い鋭角を打てない(深く返す) */
+export const TOPSPIN_ATTACK_H_LOW = 0.7
+/** 好条件判定の打点高ランプ上端(m)。これ以上で短い鋭角を最大限狙える */
+export const TOPSPIN_ATTACK_H_GOOD = 1.2
 /** スライスの逆回転ゲイン: spinScalar ×(1 + GAIN·cc)。フルで ×1.6(滑り・失速) */
 export let SLICE_CHARGE_SPIN_GAIN = 0.6
 /** スライスの深さ(m): チャージでベースライン側へ最大 DEPTH·cc 深く伸ばす */
@@ -678,9 +694,14 @@ export const TUNABLES: Tunable[] = [
     get: () => TOPSPIN_CHARGE_ANGLE, set: (v) => { TOPSPIN_CHARGE_ANGLE = v },
   },
   {
-    key: 'topspinChargeShorten', label: 'トップ浅さ(溜)', min: 0, max: 8, step: 0.25,
-    desc: 'チャージ時、横に振るほど着地を手前へ引く量(m)。上げると浅いショートアングルになる。',
-    get: () => TOPSPIN_CHARGE_SHORTEN, set: (v) => { TOPSPIN_CHARGE_SHORTEN = v },
+    key: 'topspinChargeFlatten', label: 'トップ低弾道(溜)', min: 0, max: 0.8, step: 0.05,
+    desc: 'チャージ時の弾道の低さ(apex 低減率)。上げるほど低く速い弾道になり山なりを防ぐ。',
+    get: () => TOPSPIN_CHARGE_FLATTEN, set: (v) => { TOPSPIN_CHARGE_FLATTEN = v },
+  },
+  {
+    key: 'topspinChargeNetlow', label: 'トップ低通過(溜)', min: 0, max: 0.95, step: 0.05,
+    desc: 'チャージ時にネットを低く通過させる度合い(マージン削減)。上げると低い弾道を許可する。',
+    get: () => TOPSPIN_CHARGE_NETLOW, set: (v) => { TOPSPIN_CHARGE_NETLOW = v },
   },
   {
     key: 'sliceChargeSpin', label: 'スライス回転(溜)', min: 0, max: 1.5, step: 0.05,

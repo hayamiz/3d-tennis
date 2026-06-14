@@ -79,8 +79,14 @@ import {
   TARGET_CLAMP_MARGIN,
   TOPSPIN_CHARGE_SPIN_GAIN,
   TOPSPIN_CHARGE_ANGLE,
-  TOPSPIN_CHARGE_SHORTEN,
-  TOPSPIN_MIN_DEPTH,
+  TOPSPIN_CHARGE_FLATTEN,
+  TOPSPIN_CHARGE_NETLOW,
+  TOPSPIN_DRIVE_MIN_PULL,
+  TOPSPIN_DRIVE_SPEED_MUL,
+  TOPSPIN_ATTACK_SHORTEN,
+  TOPSPIN_ATTACK_MIN_DEPTH,
+  TOPSPIN_ATTACK_H_LOW,
+  TOPSPIN_ATTACK_H_GOOD,
   SLICE_CHARGE_SPIN_GAIN,
   SLICE_CHARGE_DEPTH,
 } from '../constants'
@@ -106,6 +112,11 @@ const SIM_MAX_TIME = 8
  * これにより a += KM·(ω×v) がトップスピン(spinScalar>0)で下向き=沈む、
  * スライス(spinScalar<0)で上向き=浮く、を生む。
  */
+/** 0..1 にクランプ */
+function clampUnit(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x
+}
+
 function spinVector(horizDir: Vector3, spinScalar: number): Vector3 {
   // ŷ × d
   const yhat = new Vector3(0, 1, 0)
@@ -362,6 +373,13 @@ export function solveShot(req: ShotRequest): ShotSolution {
     param.spinScalar * spinMul * (1 + chargeSpinGain * cc) * (req.just ? JUST_SPIN_MUL : 1)
   // ネット越えマージンにペルソナの netMarginMul を乗算(スピン安定が高いほど安全)。
   let netMargin = param.netMargin * netMarginScale * netMarginMul * m.netMarginMul
+  // トップスピンはチャージで「低い弾道でネットを越える」ことを許可する(GAME_DESIGN §4.5)。
+  // 回転(沈み込み)を強めると solveToTarget のネット越え検証が apex を持ち上げ直して
+  // 山なりになるため、マージンを下げて低い通過を許し、apex 低減(下の TOPSPIN_CHARGE_FLATTEN)
+  // を効かせる。低く速い弾道+沈み込みでワイドな角度でも in に収める。
+  if (req.type === 'topspin') {
+    netMargin *= 1 - TOPSPIN_CHARGE_NETLOW * cc
+  }
 
   // 目標を「打点→目標の水平方向」へ depthBias だけ深くずらす(アウト方向)。
   // mishit の手前引きより先に適用し、clean な目標を確定させておく。
@@ -379,16 +397,27 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // baseSign: 着地側(相手コート)の z 符号。player(sideSign=+1)→ -1、AI → +1。
   const baseSign = -sideSign(req.hitter)
   const xLimit = COURT_HALF_WIDTH - TARGET_CLAMP_MARGIN
+  // トップスピンを「低く速いドライブ」で打つか(短角アタック成立時のみ true)。
+  let topspinDrive = false
   if (req.type === 'topspin') {
     // 横オフセット(中央 x=0 からの距離)をチャージで拡大 → サイドへ大きな角度。
     target.x *= 1 + TOPSPIN_CHARGE_ANGLE * cc
     target.x = Math.max(-xLimit, Math.min(xLimit, target.x))
-    // 横へ振った分だけ着地を手前(ネット側)へ引く → 浅いショートアングル(沈みで in に収まる)。
+    // 好条件(打点が低くない & 差し込まれていない)で横へ振ったときだけ、着地を中央寄り
+    // (前後の真ん中=サービスライン付近)へ引く →「左右の端を狙う短い鋭角」。既定の深い目標
+    // のままだと角度が立ち山なり&ベースライン際になるため、引くことで低く・浅くなる。
+    // 条件が悪い(低い/差し込まれ)ときは引かず従来どおり深く返す。
+    const heightCond = clampUnit(
+      (req.hitPos.y - TOPSPIN_ATTACK_H_LOW) / (TOPSPIN_ATTACK_H_GOOD - TOPSPIN_ATTACK_H_LOW),
+    )
+    const paceOk = clampUnit(1 - Math.max(0, vIn - RETURN_PACE_THRESH) / RETURN_OVERWHELM_RANGE)
     const angleFrac = Math.min(1, Math.abs(target.x) / xLimit)
-    const shorten = TOPSPIN_CHARGE_SHORTEN * cc * angleFrac
-    target.z += -baseSign * shorten // ネット側へ寄せる(深さを浅く)
-    // 手前へ引きすぎない(ネット手前のクランプ。|z| ≥ TOPSPIN_MIN_DEPTH)。
-    if (Math.abs(target.z) < TOPSPIN_MIN_DEPTH) target.z = baseSign * TOPSPIN_MIN_DEPTH
+    const pull = TOPSPIN_ATTACK_SHORTEN * cc * heightCond * paceOk * angleFrac
+    target.z += -baseSign * pull // ネット側へ引く(深さを中央寄りに)
+    // 引きすぎ(ネット手前すぎ)を防ぐ最短着地クランプ。
+    if (Math.abs(target.z) < TOPSPIN_ATTACK_MIN_DEPTH) target.z = baseSign * TOPSPIN_ATTACK_MIN_DEPTH
+    // 着地を十分引いた=短角アタックのときだけ、低く速いドライブで打つ(山なり防止)。
+    topspinDrive = pull >= TOPSPIN_DRIVE_MIN_PULL
   } else if (req.type === 'slice') {
     // 着地をベースライン側へ深く伸ばす(相手を貼り付け、時間を作る)。
     const zLimit = COURT_HALF_LENGTH - TARGET_CLAMP_MARGIN
@@ -492,19 +521,23 @@ export function solveShot(req: ShotRequest): ShotSolution {
     )
   }
 
-  // topspin/slice/lob/drop は着地点へ収束する control ソルバ(正確さが持ち味)。
-  // チャージ威力に応じて apex を僅かに下げ、飛行時間短縮で初速を増やす
-  // (収束ソルバは弾道形状が apex と目標で決まるため、speed 乗算だけでは
-  // 初速に乗らないことへの対処)。弾道の高さが本質の lob/drop では平坦化しない。
+  // 短角アタックのトップスピン(着地を十分引いた)は速度優先ドライブ(solveDrive)で
+  // 「低く・やや速い弾道」にする(GAME_DESIGN §4.5)。収束ソルバは中央寄りでも深くても
+  // 角度が立って山なりになりがちなため、攻めの短角だけドライブ系へ切替える。初速は
+  // param.speed(24)×チャージ× TOPSPIN_DRIVE_SPEED_MUL でフラット(30)ほどは速くせず、
+  // 強回転(沈み込み)+低いネット通過マージンで in に収める。深い/守りのトップスピンは
+  // 従来どおり収束ソルバの安定したラリー軌道を保つ。
+  if (req.type === 'topspin' && topspinDrive) {
+    return solveDrive(req.hitPos, target, speed * TOPSPIN_DRIVE_SPEED_MUL, spinScalar, netMargin, req.hitter)
+  }
+
+  // topspin(軽チャージ)/slice/lob/drop は着地点へ収束する control ソルバ(正確さが持ち味)。
+  // トップスピンはドライブ切替え未満でも apex をチャージで僅かに下げて山なりを抑える。
+  // 弾道の高さが本質の lob/drop は平坦化しない。
   let apex = param.apex
   if (req.type === 'topspin') {
-    const apexCharge = 1 - 0.18 * (chargePower - 1)
-    apex *= apexCharge
-    const baseSpeed = param.speed * powerScale * chargePower
-    const speedBoostRatio = baseSpeed > 1e-6 ? speed / baseSpeed : 1
-    const boost = Math.max(0, speedBoostRatio - 1)
-    apex *= 1 - 0.3 * boost
-    apex = Math.max(apex, req.hitPos.y + 0.4, NET_HEIGHT + 0.2)
+    apex *= 1 - TOPSPIN_CHARGE_FLATTEN * cc
+    apex = Math.max(apex, req.hitPos.y + 0.3, NET_HEIGHT + 0.15)
   }
 
   return solveToTarget(
