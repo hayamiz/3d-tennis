@@ -326,8 +326,8 @@ mishit ≤ EPS のときは §6.1 の通常経路(flat→solveDrive、他→solv
 
 ### 6.4 サーブの種類(solveServe)— GAME_DESIGN §5.1
 
-`solveServe(hitPos, target, power, hitter, serveType)` は `SERVE_TYPE_PARAMS`
-を用いる:
+`solveServe(hitPos, target, power, hitter, serveType, mods?, assistBoxZFar?)` は
+`SERVE_TYPE_PARAMS` を用いる:
 - `speed = (power→速度) · param.speedMul`
 - スピン = 順回転 `spinVector(horizDir, param.topSpin)` + サイドスピン
   `param.sideSpin · ŷ`(縦軸回り → 横へ曲がる Magnus)。スライスは topSpin<0 で
@@ -339,6 +339,22 @@ mishit ≤ EPS のときは §6.1 の通常経路(flat→solveDrive、他→solv
 シミュレーション補正**して、曲がりを見込んでサービスボックスに収める
 (従来の仰角掃引に加え、着地の水平誤差をフィードバックする)。
 さもないとスライス/キックが常にボックスを外す。
+
+**ネット越え高のハードリジェクト**(注意): 仰角掃引は `cross < NET_HEIGHT + 0.15·netMarginMul`
+の解を**問答無用で捨てる**(`sweepElevation` の `continue`)。このため `netMarginMul` を上げ過ぎると、
+ビッグサーバー級の球速で「ネットを越え、かつボックスに落ちる仰角」が**集合として空**になり、
+全パワーでロングフォルト確定になる。フラットの `netMarginMul` を 0.4 まで下げてあるのはこの制約のため
+(GAME_DESIGN §5.1 を参照)。同じ理由で `SERVE_SPEED_MAX` も 54 が上限の目安(56 で発生する破綻を回避)。
+
+**初心者向けオーバーパワー救済(easy/normal のみ)**: `assistBoxZFar` を渡すと、最良解の着地が
+そのボックス遠端の絶対 z(=`SERVICE_LINE_Z`)を越えていれば `speed *= 0.95` で再探索を最大 3 回試みる
+(`SERVE_SPEED_MIN · 1.05` で打ち切り)。完全フォルトを「球速がやや落ちた強打」へ降格させる。
+`main.ts` の `handleServe` は `server === 'player' && !AUTO_PLAY && difficulty ∈ SERVE_ASSIST_DIFFICULTIES`
+のときだけ `SERVICE_LINE_Z` を渡す(AI サーブやオートプレイには適用しない)。
+
+**メーター上限ラインの表示(同じ難易度ゲート)**: `PlayerController` が `serveAssist=true` のとき、
+`ServeMeterView.safePowerCap` に `SERVE_SAFE_POWER_MAX[serveType]`(フラット=0.92、他=1.0)を出力し、
+`UI` はメータートラック上の対応位置に水平ラインを描画する。`false` のとき `safePowerCap=null` で非表示。
 
 ### 6.5 ペルソナ倍率の適用(GAME_DESIGN §12 / IMPROVEMENTS §3.4)
 

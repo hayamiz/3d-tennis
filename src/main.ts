@@ -50,6 +50,7 @@ import {
   REACH,
   REACH_HEIGHT,
   SERVE_HIT_HEIGHT,
+  SERVE_ASSIST_DIFFICULTIES,
   SERVICE_LINE_Z,
   setSurface,
   STAMINA_MAX,
@@ -427,7 +428,13 @@ function handleServe(
   const xAim =
     aimX === 0 ? xCenter : aimX > 0 ? box.xMax - margin : box.xMin + margin
   const target = new Vector3(xAim, 0, box.zSign * (SERVICE_LINE_Z - 1.0))
-  const sol = solveServe(hitPos, target, power, server, serveType, mods)
+  // 初心者向け救済: プレイヤーが easy/normal で打つときだけ、最良解の着地がボックス遠端を
+  // 越えていたら速度を段階的に下げて再探索する(オートプレイ・AI サーブには適用しない)。
+  const assistBoxZFar =
+    server === 'player' && !AUTO_PLAY && SERVE_ASSIST_DIFFICULTIES.includes(config.difficulty)
+      ? SERVICE_LINE_Z
+      : undefined
+  const sol = solveServe(hitPos, target, power, server, serveType, mods, assistBoxZFar)
   ballSim.launch(hitPos, sol.vel, sol.spin, server)
   judge.reset(server, box)
   judge.onEvent({ kind: 'hit', by: server, shot: 'flat' }, ballSim.state)
@@ -617,11 +624,14 @@ function startMatch(cfg: MatchConfig): void {
   // プレイヤー側には掛けない(AI 対 AI の手前側も素の能力)。
   const oppRatings = boostRatings(opponentPersona.ratings, opponentRatingBonus(cfg.difficulty))
   opponentMods = personaModifiers(oppRatings, opponentPersona.mental)
+  // 初心者向けサーブ補助(easy/normal): メーターの安全帯表示 + オーバーパワー時の自動減速。
+  // hard 以上では補助なしで素のリスクを取らせる(GAME_DESIGN §5.1)。
+  const serveAssist = SERVE_ASSIST_DIFFICULTIES.includes(cfg.difficulty)
   // オートプレイ(AI 対 AI / デモ・検証用): ?auto 付きなら手前コートも AIController で操作する。
   // 通常は手前コートを人間プレイヤー(PlayerController)が操作する。
   playerCtrl = AUTO_PLAY
     ? new AIController(AI_PROFILES[cfg.difficulty], playerMods, playerPersona.physique, 'player')
-    : new PlayerController(sharedInput, playerMods, playerPersona.physique)
+    : new PlayerController(sharedInput, playerMods, playerPersona.physique, serveAssist)
   aiCtrl = new AIController(AI_PROFILES[cfg.difficulty], opponentMods, opponentPersona.physique, 'opponent')
   // サーフェスを適用(物理スケール + コート色)
   setSurface(cfg.surface)

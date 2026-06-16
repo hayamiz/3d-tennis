@@ -251,6 +251,12 @@ export interface ServeMeterView {
   value: number
   /** 現在選択中のサーブ種類(サーブフェーズ中の HUD 表示用) */
   serveType: ServeType
+  /**
+   * 「ここまではほぼ確実にサービスボックスに入る」パワー上限の目安(0..1)。
+   * 初心者向け補助(easy/normal)では UI 側でこの位置にラインを描画する。
+   * null/undefined のときは描画しない(難易度 hard 以上)。
+   */
+  safePowerCap?: number | null
 }
 
 /**

@@ -288,8 +288,10 @@ export interface ServeTypeParam {
 }
 
 export const SERVE_TYPE_PARAMS: Record<ServeType, ServeTypeParam> = {
-  // フラット: 最速・低い弾道・低く直進するバウンド。マージン小でリスク高。
-  flat: { speedMul: 1.0, topSpin: 20, sideSpin: 0, netMarginMul: 1.0, faultNoiseMul: 1.0 },
+  // フラット: 最速・低い弾道・低く直進するバウンド。ネット上 4cm まで許容してネットすれすれを
+  // 通し、軽い順回転(topSpin=60)でようやくサービスラインの手前に落ちるよう調整(GAME_DESIGN §5.1)。
+  // リスクは「ネットを越える低さ」ではなく狙いブレ(faultNoiseMul=1.0)に寄せている。
+  flat: { speedMul: 1.0, topSpin: 60, sideSpin: 0, netMarginMul: 0.4, faultNoiseMul: 1.0 },
   // スライス: やや遅い・横に曲がる・わずかな逆回転で低く滑る。ワイドに追い出す。
   slice: { speedMul: 0.9, topSpin: -40, sideSpin: 240, netMarginMul: 1.3, faultNoiseMul: 0.8 },
   // キック: 遅いが順回転が重く高いマージンで安全。高く弾んで跳ね上がる(2ndの主軸)。
@@ -313,18 +315,32 @@ export const BALL_VISUAL_SCALE = 1.35
 
 // サーブ
 export const SERVE_HIT_HEIGHT = 2.6
-// 速度を引き上げ、ビッグサーバー(serveSpeedMul 最大1.12)のトップサーブは
-// コースを読めないと返球が苦しいくらいの球速にする(GAME_DESIGN §5)。
+// 速度上限。SERVE_SPEED_MAX を 54 にしているのは、ビッグサーバー(serveSpeedMul 最大 1.12)
+// の power=1.0 フラットでも 218 km/h に収まり、コート長(net→service line=6.4m)に対して
+// 「ネットを越え、なおボックスに落ちる仰角」が存在することを保証するため(GAME_DESIGN §5)。
+// 上限を上げ過ぎると幾何条件として全角度がロングフォルトになる(旧 56 で発生)。
 export const SERVE_SPEED_MIN = 30
-export const SERVE_SPEED_MAX = 56
+export const SERVE_SPEED_MAX = 54
 export const SERVE_SWEET_MIN = 0.7
 export const SERVE_SWEET_MAX = 0.88
 // サーブ後の硬直(移動が SWING_LOCK_MOVE_FACTOR に低下する秒数)。パワーに比例。
 // 強打サーブほど隙が大きく、良いコースにリターンされるとリターンエースになりやすい。
 // → 常にコート端からトップスピードで打つことにリスクを生む(GAME_DESIGN §5)。
 export const SERVE_RECOVERY_MIN = 0.15 // power=0 の最低硬直(秒)
-export const SERVE_RECOVERY_GAIN = 0.6 // power=1 で +0.6秒(計 0.75秒)
+export const SERVE_RECOVERY_GAIN = 0.72 // power=1 で +0.72秒(計 0.87秒)。強打サーブのリスクを僅かに強化(IMPROVEMENTS §5.2)
 export const SERVE_METER_PERIOD = 1.2 // 三角波 0→1→0 の周期(秒)
+
+// 初心者向け補助(easy/normal)で HUD のサーブメーター上に「ここまではほぼ確実に入る」上限
+// マークを描くために使う、サーブ種別ごとのパワー上限(0..1)。実測ベース: ピーク球速と
+// サービスボックスの幾何条件から、ビッグサーバー級でも入る上限。フラットだけは 0.92 を超えると
+// ロングフォルト率が一気に上がる(GAME_DESIGN §5.1)。hard 以上では UI 表示しない。
+export const SERVE_SAFE_POWER_MAX: Record<ServeType, number> = {
+  flat: 0.92,
+  slice: 1.0,
+  kick: 1.0,
+}
+/** サーブ補助(メーター上限マーク+オーバーパワー時の自動減速)を有効にする難易度。 */
+export const SERVE_ASSIST_DIFFICULTIES: ReadonlyArray<Difficulty> = ['easy', 'normal']
 
 // ---------------------------------------------------------------------------
 // プレイヤー

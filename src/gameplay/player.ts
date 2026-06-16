@@ -65,6 +65,7 @@ import {
   SERVE_Z_MAX_BEHIND,
   CONTACT_PIVOT_HEIGHT,
   HIGH_TOPSPIN_ANGLE_BONUS,
+  SERVE_SAFE_POWER_MAX,
 } from '../constants'
 
 // ---------------------------------------------------------------------------
@@ -156,6 +157,9 @@ export class PlayerController implements Controller {
   private readonly effStaminaMax: number
   // ペルソナ倍率を反映した有効リーチ(REACH * reachMul)
   private readonly effReach: number
+  // サーブ補助(初心者向け)。true ならメーターに種別ごとの安全帯ラインを表示する。
+  // 難易度 easy/normal で有効、hard 以上は false(GAME_DESIGN §5.1)。
+  private readonly serveAssist: boolean
 
   // 公開ビュー(毎フレーム更新)
   private _view: PlayerView = {
@@ -173,10 +177,16 @@ export class PlayerController implements Controller {
     swingKind: 'normal',
   }
 
-  constructor(input: InputSource, mods: PersonaModifiers, physique: PersonaPhysique) {
+  constructor(
+    input: InputSource,
+    mods: PersonaModifiers,
+    physique: PersonaPhysique,
+    serveAssist = false,
+  ) {
     this.input = input
     this.mods = mods
     this.physique = physique
+    this.serveAssist = serveAssist
     this.effStaminaMax = STAMINA_MAX * mods.staminaMaxMul
     this.effReach = REACH * mods.reachMul
     // スタミナ初期値・ビューを有効上限で満タンに(中立倍率では STAMINA_MAX のまま)
@@ -199,6 +209,9 @@ export class PlayerController implements Controller {
       // サーブフェーズ中は常に現在の serveType を返す(HUD 表示用)。
       // メーター非アクティブ時も常に有効な値を返す。
       serveType: this.serveType,
+      // 初心者向け補助(easy/normal)時のみ「ここまでなら入る」ライン位置を返す。
+      // hard 以上ではフィールドを省略(undefined)し、UI 側で描画しない。
+      safePowerCap: this.serveAssist ? SERVE_SAFE_POWER_MAX[this.serveType] : null,
     }
   }
 

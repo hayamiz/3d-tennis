@@ -565,6 +565,45 @@ describe('solveServe', () => {
     expect(r).not.toBeNull()
     if (r) expect(Math.abs(r.pos.y)).toBeLessThan(BALL_RADIUS + 1e-6)
   })
+
+  it('ビッグサーバー級のフラット最大パワーでも幾何条件として解が存在する', () => {
+    // serve=5 相当のペルソナ倍率(サンブラント)。SERVE_SPEED_MAX 改修と netMarginMul/topSpin
+    // 調整により、p=1.0 でも「ネット越え+ボックス内」両立解が成立する(GAME_DESIGN §5.1)。
+    const mods: PersonaModifiers = {
+      ...NEUTRAL_PERSONA_MODIFIERS,
+      serveSpeedMul: 0.92 + 0.04 * 5, // 1.12
+      serveFaultMul: 1.3 - 0.12 * 5, // 0.70
+    }
+    const hitPos = new Vector3(0.7, 0, COURT_HALF_LENGTH + 0.2)
+    const target = new Vector3(-1.5, 0, -(SERVICE_LINE_Z - 1.0))
+    // 補助OFF・狙い誤差ゼロでも解が出ること(統計でなく決定論的に1回で十分)
+    const sol = solveServe(hitPos, target, 1.0, 'player', 'flat', mods)
+    // 速度が SERVE_SPEED_MIN(=30, 安全フォールバック)を大きく上回ること
+    expect(sol.vel.length()).toBeGreaterThan(40)
+  })
+
+  it('補助 ON でロングフォルトしそうな p=1.0 フラットも速度を落としてボックスに収める', () => {
+    const mods: PersonaModifiers = {
+      ...NEUTRAL_PERSONA_MODIFIERS,
+      serveSpeedMul: 1.12,
+      serveFaultMul: 0.70,
+    }
+    const hitPos = new Vector3(0.7, 0, COURT_HALF_LENGTH + 0.2)
+    const target = new Vector3(-1.5, 0, -(SERVICE_LINE_Z - 1.0))
+    // 補助 ON: 着地が SERVICE_LINE_Z を越えたら速度を 5% ずつ落として再探索する
+    const sol = solveServe(hitPos, target, 1.0, 'player', 'flat', mods, SERVICE_LINE_Z)
+    const sim = new BallSim()
+    const hp = hitPos.clone()
+    hp.y = 2.6 * (1.88 / 1.83)
+    sim.launch(hp, sol.vel, sol.spin, 'player')
+    const land = runUntilBounce(sim)
+    expect(land).not.toBeNull()
+    if (land) {
+      // サービスボックス内: -SERVICE_LINE_Z .. 0(対角は x<0 側)
+      expect(land.pos.z).toBeLessThan(0)
+      expect(land.pos.z).toBeGreaterThan(-SERVICE_LINE_Z)
+    }
+  })
 })
 
 describe('速球の返球(差し込まれ / ARCHITECTURE §6.2 / §16)', () => {

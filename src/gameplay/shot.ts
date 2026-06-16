@@ -829,6 +829,13 @@ export function solveServe(
   hitter: Side,
   serveType: ServeType,
   mods?: PersonaModifiers,
+  /**
+   * 初心者向け補助(easy/normal、GAME_DESIGN §5.1)。値を渡すとサービスボックス遠端の
+   * 絶対 z(= SERVICE_LINE_Z)として扱い、最良解の着地がボックスを越えていれば速度を
+   * 5% ずつ下げて最大 3 回再探索する。「メーター全開で打って常にロングフォルト」を、
+   * 「ギリギリ入る代わりに球速が落ちた強打」へ降格させる救済。
+   */
+  assistBoxZFar?: number,
 ): ShotSolution {
   const p = Math.max(0, Math.min(1, power))
   const stp = SERVE_TYPE_PARAMS[serveType]
@@ -928,29 +935,52 @@ export function solveServe(
   // (旧実装は毎反復で result を無条件に上書きしていたため、サイドスピン(slice/kick)や
   //  オーバーパワー時に方向が発散して的外れなサーブ→ダブルフォルトを起こしていた)。
   const landErr = (land: Vector3) => Math.hypot(land.x - aimedTarget.x, land.z - aimedTarget.z)
-  let cur = sweepElevation(dirX, dirZ)
-  let best = cur
-  let bestErr = best ? landErr(best.land) : Infinity
-  for (let iter = 0; iter < 4; iter++) {
-    if (!cur) break
-    const errX = aimedTarget.x - cur.land.x
-    if (Math.abs(errX) < 0.15) break
-    // 水平方向ベクトルを errX に比例して回転(ゲイン控えめ + 1ステップの回転量を
-    // ±0.2rad に制限して発散を防ぐ)。
-    const horizDist = Math.max(1, Math.hypot(aimedTarget.x - hp.x, aimedTarget.z - hp.z))
-    const dAngle = Math.max(-0.2, Math.min(0.2, (errX / horizDist) * 0.7))
-    const cos = Math.cos(dAngle)
-    const sin = Math.sin(dAngle)
-    const nX = dirX * cos - dirZ * sin
-    const nZ = dirX * sin + dirZ * cos
-    dirX = nX
-    dirZ = nZ
-    const next = sweepElevation(dirX, dirZ)
-    if (!next) break
-    cur = next
-    const e = landErr(next.land)
-    if (e < bestErr) {
-      bestErr = e
+
+  /** 現在の `speed`(外側 let)で最良解を探索する。サイドスピン補正の反復付き。 */
+  function searchBest(): { vel: Vector3; spin: Vector3; land: Vector3 } | null {
+    // 初期方向: 打点→狙い
+    let dX = horiz0 > 1e-6 ? dx0 / horiz0 : 0
+    let dZ = horiz0 > 1e-6 ? dz0 / horiz0 : -sideSign(hitter)
+    let cur = sweepElevation(dX, dZ)
+    let b = cur
+    let bestErr = b ? landErr(b.land) : Infinity
+    for (let iter = 0; iter < 4; iter++) {
+      if (!cur) break
+      const errX = aimedTarget.x - cur.land.x
+      if (Math.abs(errX) < 0.15) break
+      // 水平方向ベクトルを errX に比例して回転(ゲイン控えめ + 1ステップの回転量を
+      // ±0.2rad に制限して発散を防ぐ)。
+      const horizDist = Math.max(1, Math.hypot(aimedTarget.x - hp.x, aimedTarget.z - hp.z))
+      const dAngle = Math.max(-0.2, Math.min(0.2, (errX / horizDist) * 0.7))
+      const cos = Math.cos(dAngle)
+      const sin = Math.sin(dAngle)
+      const nX = dX * cos - dZ * sin
+      const nZ = dX * sin + dZ * cos
+      dX = nX
+      dZ = nZ
+      const next = sweepElevation(dX, dZ)
+      if (!next) break
+      cur = next
+      const e = landErr(next.land)
+      if (e < bestErr) {
+        bestErr = e
+        b = next
+      }
+    }
+    return b
+  }
+
+  let best = searchBest()
+
+  // --- 初心者向け救済: 最良解の着地がサービスボックス遠端を越えていれば、速度を
+  // 段階的に落として再探索する。完全フォルトを「ギリギリ入る強打」へ降格(GAME_DESIGN §5.1)。
+  if (assistBoxZFar !== undefined && best) {
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(best.land.z) <= assistBoxZFar) break
+      if (speed <= SERVE_SPEED_MIN * 1.05) break
+      speed *= 0.95
+      const next = searchBest()
+      if (!next) break
       best = next
     }
   }

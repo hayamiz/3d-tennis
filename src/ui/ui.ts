@@ -60,6 +60,8 @@ interface HudCache {
   opponentStamina: number
   serveMeterActive: boolean
   serveMeterValue: number
+  /** メーター安全帯上限ライン位置(0..1、null=非表示) */
+  serveSafeCap: number | null
   serveNumber: number
   phase: string
   banner: string | null
@@ -325,6 +327,8 @@ export class UI {
   private readonly hudServeTypeLabel: HTMLElement
   private readonly hudServeMeter: HTMLElement
   private readonly hudServeMeterFill: HTMLElement
+  /** メーター上限ライン(easy/normal のサーブ補助表示) */
+  private readonly hudServeSafeCap: HTMLElement
   private readonly hudBanner: HTMLElement
   private readonly hudBannerText: HTMLElement
   /** チャージバーのコンテナ要素 */
@@ -410,6 +414,7 @@ export class UI {
     opponentStamina: -1,
     serveMeterActive: false,
     serveMeterValue: -1,
+    serveSafeCap: undefined as unknown as number | null,
     serveNumber: 1,
     phase: '',
     banner: undefined as unknown as null,
@@ -446,6 +451,7 @@ export class UI {
     this.hudServeTypeLabel = hudRefs.serveTypeLabel
     this.hudServeMeter = hudRefs.serveMeter
     this.hudServeMeterFill = hudRefs.serveMeterFill
+    this.hudServeSafeCap = hudRefs.serveSafeCap
     this.hudBanner = hudRefs.banner
     this.hudBannerText = hudRefs.bannerText
     this.hudChargeBar = hudRefs.chargeBar
@@ -626,6 +632,19 @@ export class UI {
         this.hudServeMeterFill.classList.add('sweet')
       }
       c.serveMeterValue = serveMeter.value
+    }
+    // 安全帯上限ライン(easy/normal でのみ供給される。サーブ種別を切り替えるとサーブ
+    // フェーズ中でも値が変わるので、毎フレーム比較して差分があれば更新する)。
+    const safeCap = serveMeter.safePowerCap ?? null
+    if (safeCap !== c.serveSafeCap) {
+      if (safeCap === null) {
+        this.hudServeSafeCap.classList.add('hidden')
+      } else {
+        const capPct = Math.max(0, Math.min(100, safeCap * 100))
+        this.hudServeSafeCap.style.bottom = `${capPct}%`
+        this.hudServeSafeCap.classList.remove('hidden')
+      }
+      c.serveSafeCap = safeCap
     }
 
     // --- サーブ番号ラベル(上部中央)/ サーブ種類ラベル(プレイヤー頭上) ---
@@ -1402,6 +1421,8 @@ export class UI {
     serveTypeLabel: HTMLElement
     serveMeter: HTMLElement
     serveMeterFill: HTMLElement
+    /** 安全帯上限ライン(easy/normal でのみ表示) */
+    serveSafeCap: HTMLElement
     banner: HTMLElement
     bannerText: HTMLElement
     chargeBar: HTMLElement
@@ -1517,6 +1538,9 @@ export class UI {
     const serveMeterFill = el('div', 'serve-meter-fill')
     serveMeterFill.style.height = '0%'
     meterTrack.appendChild(serveMeterFill)
+    // 安全帯上限ライン(easy/normal でのみ表示)。サーブ種別ごとの上限を位置で示す。
+    const serveSafeCap = el('div', 'serve-safe-cap hidden')
+    meterTrack.appendChild(serveSafeCap)
     serveMeter.appendChild(meterTrack)
     container.appendChild(serveMeter)
 
@@ -1603,6 +1627,7 @@ export class UI {
       serveTypeLabel,
       serveMeter,
       serveMeterFill,
+      serveSafeCap,
       banner,
       bannerText,
       chargeBar,
@@ -1749,6 +1774,7 @@ export class UI {
       opponentStamina: -1,
       serveMeterActive: false,
       serveMeterValue: -1,
+      serveSafeCap: undefined as unknown as number | null,
       serveNumber: 0 as 1 | 2,
       phase: '',
       banner: undefined as unknown as null,
