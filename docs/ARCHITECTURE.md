@@ -295,8 +295,16 @@ typeWeak   = { slice: RETURN_WEAKNESS_SLICE, flat: RETURN_WEAKNESS_FLAT,
                topspin: RETURN_WEAKNESS_TOPSPIN, lob/drop: RETURN_WEAKNESS_TOUCH }[type]
 chargeMit  = 1 − RETURN_CHARGE_MITIGATION · min(c, 1)
 posMit     = clamp(1.3 − q, 0.35, 1.0)
-mishit = clamp( (paceExcess / RETURN_OVERWHELM_RANGE) · typeWeak · chargeMit · posMit, 0, 1 )
+timingFac  = req.just ? (1 − RETURN_JUST_MISHIT_RELIEF) : RETURN_NOJUST_MISHIT_AMP  // 芯 ×0.2 / 外し ×1.25
+mishit = clamp( (paceExcess / RETURN_OVERWHELM_RANGE) · typeWeak · chargeMit · posMit · timingFac, 0, 1 )
 ```
+
+ミート timing(`req.just`)が `mishit` に直接効く(GAME_DESIGN §4.4.1/§4.6・IMPROVEMENTS §5.3a):
+芯で合わせれば速球も差し込まれをほぼ無効化(clean ドライブを維持)、外せば増幅。
+`paceExcess` 比例なので通常ラリー(vIn ≤ 閾値)では timingFac の効果も 0。
+あわせて just の初速ボーナスも球速で上積みする(GAME_DESIGN §4.4.1・IMPROVEMENTS §5.3b:
+`if just: speed *= JUST_POWER_MUL + min(RETURN_JUST_PACE_POWER_MAX, RETURN_JUST_PACE_POWER_K
+· paceExcess)`)。`paceExcess` は `vIn` 算出直後に求め、この just 威力ボーナスと mishit 計算で共用する。
 
 `mishit > MISHIT_ACTIVE_EPS` のとき、その打球は「山なりの弱い返球」へ差し替える
 (clean な打球パラメータと弱返球を mishit で線形補間):
@@ -687,6 +695,9 @@ rAF(t):
   - 同じ速球(vIn≈50)でも、フルチャージのスライスはトップスピンより
     返球初速が速く弾道が低い(ブロックで deep に返せる)。
   - 通常ラリー球速(vIn≤25)では mishit=0 で従来どおりの打球になる(回帰)。
+  - 速球リターンのミート timing 増幅(§6.2 / GAME_DESIGN §4.4.1): 速球(vIn≈42)を
+    芯で合わせた(just)返球は外した返球より初速が大きく(>1.3倍)、球速が速いほど
+    just の初速ボーナスが増える。通常ラリー球速では timing 増幅が無効で初速差は控えめ(回帰)。
 - サーブの種類(§6.4):
   - 3種ともサービスボックス内に着地する(スライス/キックの横曲がりを補正できている)。
   - kick はバウンド後の最高到達高が flat より高い(高く弾む)。

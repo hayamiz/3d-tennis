@@ -649,6 +649,51 @@ describe('速球の返球(差し込まれ / ARCHITECTURE §6.2 / §16)', () => {
   })
 })
 
+describe('速球リターンのミート timing 増幅(IMPROVEMENTS §5.3)', () => {
+  /** 同条件を試行回数ぶん平均した返球初速。just(芯で合わせた)有無を切り替える。 */
+  function avgSpeed(incomingSpeed: number, just: boolean, trials = 60): number {
+    const hitPos = new Vector3(0, 1.0, 11)
+    const target = new Vector3(0, 0, -9)
+    let sum = 0
+    for (let i = 0; i < trials; i++) {
+      const sol = solveShot({
+        type: 'flat',
+        hitter: 'player',
+        hitPos,
+        target,
+        quality: 1.0,
+        charge: 0,
+        incomingSpeed,
+        just,
+      })
+      sum += sol.vel.length()
+    }
+    return sum / trials
+  }
+
+  it('速球(vIn≈42): just リターンの初速は not-just を大きく上回る(差し込まれ軽減 + pace 威力)', () => {
+    const just = avgSpeed(42, true)
+    const miss = avgSpeed(42, false)
+    // 芯で合わせれば差し込まれず pace を威力に変換 → 強烈なカウンター。外せば差し込まれて鈍る。
+    expect(just).toBeGreaterThan(miss)
+    expect(just / miss).toBeGreaterThan(1.3)
+  })
+
+  it('速球ほど just の初速ボーナスが増える(pace 比例)', () => {
+    const slowJust = avgSpeed(30, true)
+    const fastJust = avgSpeed(48, true)
+    expect(fastJust).toBeGreaterThan(slowJust)
+  })
+
+  it('回帰: 通常ラリー球速(vIn=18<26)では timing 増幅が無効で初速差は控えめ', () => {
+    // paceExcess=0 → mishit=0(差し込まれなし)・pace 威力ボーナス 0。just は JUST_POWER_MUL のみ。
+    const just = avgSpeed(18, true)
+    const miss = avgSpeed(18, false)
+    expect(just).toBeGreaterThan(miss)
+    expect(just / miss).toBeLessThan(1.2)
+  })
+})
+
 describe('サーブの種類(ARCHITECTURE §6.4 / §16)', () => {
   const serveTypes: ServeType[] = ['flat', 'slice', 'kick']
 

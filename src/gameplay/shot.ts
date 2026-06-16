@@ -66,6 +66,10 @@ import {
   RETURN_MISHIT_SHORT,
   RETURN_MISHIT_SPRAY,
   MISHIT_ACTIVE_EPS,
+  RETURN_JUST_MISHIT_RELIEF,
+  RETURN_NOJUST_MISHIT_AMP,
+  RETURN_JUST_PACE_POWER_K,
+  RETURN_JUST_PACE_POWER_MAX,
   SERVE_TYPE_PARAMS,
   VOLLEY_MAX_HEIGHT,
   VOLLEY_SPEED_CAP,
@@ -253,6 +257,8 @@ export function solveShot(req: ShotRequest): ShotSolution {
   const h = req.hitPos.y // 打点の高さ
   const depth = Math.abs(req.hitPos.z) // ネットからの距離
   const vIn = Math.max(0, req.incomingSpeed) // 相手球の勢い
+  // 速球超過分(差し込まれ・ミート timing 増幅の共通スケーラ)。通常ラリーでは 0(GAME_DESIGN §4.6)。
+  const paceExcess = Math.max(0, vIn - RETURN_PACE_THRESH)
   // lev: 低い打点で負・通常で0・高い打点で正(clamp −1..+1)
   const lev = Math.max(-1, Math.min(1, (h - CONTACT_PIVOT_HEIGHT) / CONTACT_PIVOT_HEIGHT))
   const low = Math.max(0, -lev) // 低い打点の度合い
@@ -361,7 +367,12 @@ export function solveShot(req: ShotRequest): ShotSolution {
     : chargePower
   let speed = param.speed * powerScale * effChargePower * speedMul * m.shotSpeedMul + speedAdd
   // ジャストミート: 初速に控えめなボーナス(IMPROVEMENTS §6.1.1)。
-  if (req.just) speed *= JUST_POWER_MUL
+  // さらに速球ほど芯で返せたときのカウンターを強める(pace を威力に変換。IMPROVEMENTS §5.3b)。
+  // 通常ラリーは paceExcess=0 → 従来どおり ×JUST_POWER_MUL のまま。
+  if (req.just) {
+    const justPaceBonus = Math.min(RETURN_JUST_PACE_POWER_MAX, RETURN_JUST_PACE_POWER_K * paceExcess)
+    speed *= JUST_POWER_MUL + justPaceBonus
+  }
   // ボレーは振り抜かないため初速を VOLLEY_SPEED_CAP で頭打ちにする。
   if (isVolley) speed = Math.min(speed, VOLLEY_SPEED_CAP)
   // チャージによる回転強化(GAME_DESIGN §4.5)。トップスピンは沈み込み+跳ね、
@@ -429,7 +440,7 @@ export function solveShot(req: ShotRequest): ShotSolution {
   // スマッシュ分岐(上で return 済み)以外の全ショットで、相手球が速いと芯で
   // 捉えにくく「差し込まれて」山なりの弱い返球(チャンスボール)になる。
   // 通常ラリー(vIn ≤ RETURN_PACE_THRESH=26)は paceExcess=0 → mishit=0 で影響なし。
-  const paceExcess = Math.max(0, vIn - RETURN_PACE_THRESH)
+  // paceExcess は vIn 定義直後で算出済み(just 威力ボーナスと共用)。
   const typeWeak =
     req.type === 'slice'
       ? RETURN_WEAKNESS_SLICE
@@ -440,10 +451,16 @@ export function solveShot(req: ShotRequest): ShotSolution {
           : RETURN_WEAKNESS_TOUCH // lob / drop
   const chargeMit = 1 - RETURN_CHARGE_MITIGATION * Math.min(c, 1)
   const posMit = Math.max(0.35, Math.min(1.0, 1.3 - q))
+  // ミート timing 係数(IMPROVEMENTS §5.3a): 芯で合わせれば差し込まれを大幅軽減、
+  // 外せば増幅。paceExcess に比例する mishit に乗るので、速球ほど合否の差が開く。
+  const timingFactor = req.just ? 1 - RETURN_JUST_MISHIT_RELIEF : RETURN_NOJUST_MISHIT_AMP
   // 差し込まれ度合いにペルソナの returnSolidMul を乗算(リターン巧者ほど差し込まれにくい)。
   const mishit = Math.max(
     0,
-    Math.min(1, (paceExcess / RETURN_OVERWHELM_RANGE) * typeWeak * chargeMit * posMit * m.returnSolidMul),
+    Math.min(
+      1,
+      (paceExcess / RETURN_OVERWHELM_RANGE) * typeWeak * chargeMit * posMit * m.returnSolidMul * timingFactor,
+    ),
   )
 
   // 弱返球パラメータ(clean な打球と山なり sitter を mishit で線形補間)。
